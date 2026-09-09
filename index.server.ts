@@ -61,10 +61,28 @@ function nodeForCli(cli: string): string {
   return process.execPath;
 }
 
+// The managed checkout may carry its own copy of the bridge, installed by the
+// manifest `build` commands when the plugin is added or updated. Prefer it
+// (newest first) so the bridge version stays pinned to the plugin release.
+function checkoutInstalls(): string[] {
+  const root = path.join(os.homedir(), ".paseo", "plugins", "paseo-plugin-zcode");
+  try {
+    return fs
+      .readdirSync(root)
+      .map((dir) => path.join(root, dir, "checkout", RELATIVE_ENTRY))
+      .filter((cli) => fs.existsSync(cli))
+      .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  } catch {
+    return [];
+  }
+}
+
 function resolveLaunch(): { command: readonly [string, string] } {
-  // First: when the daemon shares a node install with the bridge (CLI-hosted
-  // case), the worker script's ancestor chain already covers the global
-  // install directory.
+  for (const cli of checkoutInstalls()) {
+    return { command: [nodeForCli(cli), cli] };
+  }
+  // When the daemon shares a node install with the bridge (CLI-hosted case),
+  // the worker script's ancestor chain covers the global install directory.
   try {
     const { createRequire } = require("node:module");
     const cli = createRequire(process.argv[1]).resolve("zcode-acp-server/dist/cli.js");
