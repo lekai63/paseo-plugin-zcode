@@ -7,8 +7,9 @@
 ## 前置条件
 
 - **Paseo >= 0.8.0**（provider 插件 API 是 0.8 新增，0.7.x 没有）
-- **从 npm 安装桥**：`npm i -g zcode-acp-server`
 - daemon 开启插件：`~/.paseo/config.json` 根级 `"pluginsEnabled": true`，然后 `paseo reload`
+
+桥会自动安装：`paseo plugin add` / `update` 时，manifest 的 `build` 会在托管检出目录里执行 `npm ci --omit=dev`，按仓库锁文件拉取 `zcode-acp-server`。全局安装（`npm i -g zcode-acp-server`）变为可选——插件优先使用检出内副本，其次回退到常见全局根目录。
 
 ## 安装
 

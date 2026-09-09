@@ -7,8 +7,9 @@ A [Paseo](https://paseo.sh) provider plugin that registers **ZCode** (Z.ai's cod
 ## Prerequisites
 
 - **Paseo >= 0.8.0** (the provider plugin API does not exist in 0.7.x)
-- **The bridge installed from npm**: `npm i -g zcode-acp-server`
 - Plugins enabled on the daemon: root-level `"pluginsEnabled": true` in `~/.paseo/config.json`, then `paseo reload`
+
+The bridge installs itself: on `paseo plugin add` / `update`, the manifest `build` runs `npm ci --omit=dev` inside the managed checkout, which pulls `zcode-acp-server` from the committed lockfile. A global install (`npm i -g zcode-acp-server`) is optional — the plugin prefers the checkout-local copy and falls back to well-known global roots.
 
 ## Install
 
