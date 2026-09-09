@@ -31,7 +31,7 @@ npm i -g zcode-acp-server@latest   # the plugin picks it up as-is
 
 ## How the bridge is resolved
 
-Paseo evaluates plugin bundles with an injected `require` and no `__dirname`/`import.meta`. This plugin resolves the bridge entry via `createRequire(process.argv[1])` — the worker script's module ancestor chain covers the npm global install directory — and launches it as `[process.execPath, <cli.js>]`. Nothing depends on `PATH`, so the provider works no matter how the daemon was started (CLI, launchd, GUI).
+Paseo evaluates plugin bundles with an injected `require` and no `__dirname`/`import.meta`, and the daemon can be hosted either by a node CLI install or by the desktop app (Electron). The plugin therefore locates the bridge by scanning the well-known npm global roots — fnm, nvm, `/usr/local`, Homebrew — pairing each root with its own `node` binary, with the worker-script anchor (`createRequire(process.argv[1])`) tried first. Nothing depends on `PATH`, so the provider works no matter how the daemon was started, and the bridge never launches through an Electron binary.
 
 ## Notes & limitations
 

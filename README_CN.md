@@ -31,7 +31,7 @@ npm i -g zcode-acp-server@latest   # 插件自动使用新版本
 
 ## 桥的解析机制
 
-Paseo 以注入 `require`、无 `__dirname`/`import.meta` 的方式执行插件 bundle。本插件用 `createRequire(process.argv[1])` 定位桥入口——plugin worker 脚本的 node_modules 祖先链覆盖 npm 全局安装目录——并以 `[process.execPath, <cli.js>]` 启动。全程不依赖 `PATH`，无论 daemon 由 CLI、launchd 还是 GUI 拉起都能工作。
+Paseo 以注入 `require`、无 `__dirname`/`import.meta` 的方式执行插件 bundle，且 daemon 可能由 node CLI 安装或桌面 app（Electron）托管。本插件因此改为扫描常见 npm 全局根目录（fnm、nvm、`/usr/local`、Homebrew），并配对各根目录自带的 `node` 二进制；worker 脚本锚点（`createRequire(process.argv[1])`）作为首选尝试。全程不依赖 `PATH`，无论 daemon 由谁拉起都能工作，桥也永远不会经由 Electron 二进制启动。
 
 ## 已知限制
 
