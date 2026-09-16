@@ -1,6 +1,6 @@
 {
   "name": "paseo-plugin-zcode",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "devDependencies": {
     "@getpaseo/plugin": "0.8.0-beta.1",
     "@types/node": "^26.5.0",
@@ -11,6 +11,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "zcode-acp-server": "^0.31.0"
+    "zcode-acp-server": "git+https://github.com/lekai63/zcode-acp.git#paseo"
   }
 }

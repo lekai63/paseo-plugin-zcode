@@ -15,6 +15,11 @@ import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 
 const RELATIVE_ENTRY = path.join("zcode-acp-server", "dist", "cli.js");
 
+// The managed checkout keeps the bridge under its own `node_modules`; the
+// global roots are already `node_modules` directories themselves, so the two
+// entry shapes differ by that one segment.
+const CHECKOUT_ENTRY = path.join("node_modules", RELATIVE_ENTRY);
+
 interface GlobalInstall {
   nodeBin: string;
   globalRoot: string;
@@ -69,7 +74,7 @@ function checkoutInstalls(): string[] {
   try {
     return fs
       .readdirSync(root)
-      .map((dir) => path.join(root, dir, "checkout", RELATIVE_ENTRY))
+      .map((dir) => path.join(root, dir, "checkout", CHECKOUT_ENTRY))
       .filter((cli) => fs.existsSync(cli))
       .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
   } catch {
