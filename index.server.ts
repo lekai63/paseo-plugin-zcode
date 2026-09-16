@@ -5,6 +5,9 @@ import path from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 
+import { getZcodeQuota } from "./server/quota";
+import { zcodeQuotaRpc } from "./shared/quota";
+
 // Paseo evaluates plugin bundles with an injected `require` and without
 // `__dirname` or a usable `import.meta`. The daemon may be hosted by a node
 // CLI install or by the desktop app (Electron), which changes where module
@@ -120,5 +123,8 @@ export default function contribute(server: PluginServerContext) {
       acpOptions: { startupTimeoutMs: 180_000 },
     }),
   );
+  // GLM Coding Plan quota for the composer pill (optionally refreshed via the
+  // popover's Refresh button, which passes `force`).
+  server.handle(zcodeQuotaRpc, getZcodeQuota);
   return () => {};
 }

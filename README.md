@@ -26,6 +26,18 @@ Then run agents as usual:
 paseo run --provider zcode "Fix the failing test"
 ```
 
+## Quota pill
+
+The client entry adds a composer pill to every `zcode` agent, next to the
+context meter. The pill label shows the GLM Coding Plan **5-hour** remaining
+percentage; opening it lists every window the quota API reports (5h, weekly,
+MCP) with used/left bars and reset countdowns. The data comes from the same
+endpoint the ZCode desktop app uses (`/api/monitor/usage/quota/limit`), reading
+the active provider's apiKey from `~/.zcode/v2/config.json` — the first enabled
+provider, or the one pinned by `ZCODE_PROVIDER`, exactly like the bridge. The
+plugin server caches snapshots for 10 s and the client polls once a minute; the
+popover's **Refresh** button bypasses the cache.
+
 ## Upgrade the bridge
 
 The bridge is pinned to a commit of `lekai63/zcode-acp` (see `package-lock.json`). To upgrade, sync upstream on the fork's `paseo` branch, make the changes there, then update this repo's dependency ref and lockfile.

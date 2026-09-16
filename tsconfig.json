@@ -7,8 +7,10 @@
       "ES2023"
     ],
     "types": [
-      "node"
+      "node",
+      "react"
     ],
+    "jsx": "react-jsx",
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,

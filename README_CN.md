@@ -26,6 +26,10 @@ paseo plugin ls        # 期望 paseo-plugin-zcode = running
 paseo run --provider zcode "修复失败的测试"
 ```
 
+## 配额 pill
+
+client 入口会为每个 `zcode` agent 在输入框（context meter 旁）加一个 pill：标签实时显示 GLM Coding Plan **5 小时窗口**的剩余百分比；点开后可看到配额 API 返回的全部窗口（5h、weekly、MCP）的已用/剩余进度条和重置倒计时。数据来自 ZCode 桌面端同款接口 `/api/monitor/usage/quota/limit`，读取 `~/.zcode/v2/config.json` 中当前启用 provider 的 apiKey（第一个 enabled 的 provider，或被 `ZCODE_PROVIDER` 指定的那个，与桥的选取规则一致）。插件 server 端缓存 10 秒，client 每分钟轮询一次，popover 里的 **Refresh** 会绕过缓存强制刷新。
+
 ## 升级桥
 
 桥锁定在 `lekai63/zcode-acp` 的提交（见 `package-lock.json`）。要升级：在 fork 的 `paseo` 分支上同步上游并修改，然后更新本仓库的依赖 ref 与锁文件。
