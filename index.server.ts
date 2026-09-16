@@ -69,20 +69,45 @@ function nodeForCli(cli: string): string {
   return process.execPath;
 }
 
+// One machine can host several daemons, each with its own home. Resolve the
+// hosting daemon's home the way Paseo does (`PASEO_HOME`, else `~/.paseo`) so
+// it prefers the bridge pinned to ITS OWN checkout; the default home stays as
+// a fallback for daemons that don't export PASEO_HOME.
+function pluginHomes(): string[] {
+  const homes: string[] = [];
+  const configured = process.env.PASEO_HOME?.trim();
+  if (configured) {
+    const expanded = configured.startsWith("~/")
+      ? path.join(os.homedir(), configured.slice(2))
+      : configured === "~"
+        ? os.homedir()
+        : configured;
+    homes.push(path.resolve(expanded));
+  }
+  const fallback = path.join(os.homedir(), ".paseo");
+  if (!homes.includes(fallback)) homes.push(fallback);
+  return homes;
+}
+
 // The managed checkout may carry its own copy of the bridge, installed by the
 // manifest `build` commands when the plugin is added or updated. Prefer it
-// (newest first) so the bridge version stays pinned to the plugin release.
+// (newest first within a home) so the bridge version stays pinned to the
+// plugin release.
 function checkoutInstalls(): string[] {
-  const root = path.join(os.homedir(), ".paseo", "plugins", "paseo-plugin-zcode");
-  try {
-    return fs
-      .readdirSync(root)
-      .map((dir) => path.join(root, dir, "checkout", CHECKOUT_ENTRY))
-      .filter((cli) => fs.existsSync(cli))
-      .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-  } catch {
-    return [];
+  for (const home of pluginHomes()) {
+    const root = path.join(home, "plugins", "paseo-plugin-zcode");
+    try {
+      const installs = fs
+        .readdirSync(root)
+        .map((dir) => path.join(root, dir, "checkout", CHECKOUT_ENTRY))
+        .filter((cli) => fs.existsSync(cli))
+        .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+      if (installs.length > 0) return installs;
+    } catch {
+      // this home has no managed checkout — try the next one
+    }
   }
+  return [];
 }
 
 function resolveLaunch(): { command: readonly [string, string] } {
