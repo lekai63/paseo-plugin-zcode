@@ -38,6 +38,22 @@ provider, or the one pinned by `ZCODE_PROVIDER`, exactly like the bridge. The
 plugin server caches snapshots for 10 s and the client polls once a minute; the
 popover's **Refresh** button bypasses the cache.
 
+## Sub-agent cards
+
+`zcode` runs every `Agent`/`Task` dispatch as a child session. The bridge
+(`zcode-acp`) tracks them — mirrored child tool events on the parent stream
+plus the authoritative `session/subagents` directory — and publishes a vendor
+notification (`_zcode/subagent`) per state change. The plugin's ACP transformer
+(`server/subagents.ts`) turns each one into Paseo's native **sub-agent card**
+(`ProviderToolCallDetail { type: "sub_agent" }`): bot icon,
+`<type>: <description>` title, and an expandable activity log with the
+sub-agent's tool calls, plus a usage footer (`n tools · n tokens · n s`).
+
+The card reuses the dispatch's tool-call id, so it **merges with the `Agent`
+card** the ACP stream already created instead of adding a second row; the
+`Agent`/`Task` card simply becomes the sub-agent card. Editors that do not
+understand the vendor method ignore it, so Zed/Martty behaviour is unchanged.
+
 ## Upgrade the bridge
 
 The bridge is pinned to a commit of `lekai63/zcode-acp` (see `package-lock.json`). To upgrade, sync upstream on the fork's `paseo` branch, make the changes there, then update this repo's dependency ref and lockfile.

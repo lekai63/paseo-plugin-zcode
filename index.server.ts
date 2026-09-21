@@ -6,6 +6,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 
 import { getZcodeQuota } from "./server/quota";
+import { zcodeSubagentTransformer } from "./server/subagents";
 import { zcodeQuotaRpc } from "./shared/quota";
 
 // Paseo evaluates plugin bundles with an injected `require` and without
@@ -146,6 +147,10 @@ export default function contribute(server: PluginServerContext) {
       // First bridge start can take 30s+ while npm warms up; widen the
       // handshake window.
       acpOptions: { startupTimeoutMs: 180_000 },
+      // Sub-agent activity: zcode-acp publishes `_zcode/subagent` vendor
+      // notifications; this transformer injects them as `sub_agent` timeline
+      // cards (see server/subagents.ts for why that is the only route).
+      transformers: [zcodeSubagentTransformer],
     }),
   );
   // GLM Coding Plan quota for the composer pill (optionally refreshed via the

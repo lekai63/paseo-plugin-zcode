@@ -30,6 +30,12 @@ paseo run --provider zcode "修复失败的测试"
 
 client 入口会为每个 `zcode` agent 在输入框（context meter 旁）加一个 pill：标签实时显示 GLM Coding Plan **5 小时窗口**的剩余百分比；点开后可看到配额 API 返回的全部窗口（5h、weekly、MCP）的已用/剩余进度条和重置倒计时。数据来自 ZCode 桌面端同款接口 `/api/monitor/usage/quota/limit`，读取 `~/.zcode/v2/config.json` 中当前启用 provider 的 apiKey（第一个 enabled 的 provider，或被 `ZCODE_PROVIDER` 指定的那个，与桥的选取规则一致）。插件 server 端缓存 10 秒，client 每分钟轮询一次，popover 里的 **Refresh** 会绕过缓存强制刷新。
 
+## 子代理(subagent)卡片
+
+`zcode` 每次通过 `Agent`/`Task` 派发子代理时，子代理都跑在独立子会话里。桥（`zcode-acp`）会跟踪它们——父会话流上镜像出来的子会话工具事件，加上权威目录 `session/subagents`——并在每次状态变化时发出供应商通知 `_zcode/subagent`。插件的 ACP transformer（`server/subagents.ts`）把它转换成 Paseo 原生的**子代理卡片**（`ProviderToolCallDetail { type: "sub_agent" }`）：机器人图标、`<类型>: <描述>` 标题、可展开的活动日志（子代理自己的工具调用），以及用量页脚（`n tools · n tokens · n s`）。
+
+卡片复用派发那一次的 tool call id，因此会**与 ACP 流里已有的 `Agent` 卡片合并**，而不是多出一行——那张 `Agent`/`Task` 卡片直接变成子代理卡片。不认识该 vendor 方法的编辑器会忽略它，Zed/Martty 的行为不变。
+
 ## 升级桥
 
 桥锁定在 `lekai63/zcode-acp` 的提交（见 `package-lock.json`）。要升级：在 fork 的 `paseo` 分支上同步上游并修改，然后更新本仓库的依赖 ref 与锁文件。

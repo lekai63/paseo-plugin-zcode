@@ -12,7 +12,8 @@
   },
   "private": true,
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test server/*.test.ts"
   },
   "dependencies": {
     "zcode-acp-server": "git+https://github.com/lekai63/zcode-acp.git#paseo"
