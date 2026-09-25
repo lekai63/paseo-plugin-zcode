@@ -11,10 +11,13 @@
  * and a transformer may return `{ type: "timeline", item }` to inject an
  * arbitrary timeline row.
  *
- * That is the only route by which a plugin can render a sub-agent: Paseo's
- * native `provider_subagent` events are not part of the plugin provider
- * contract (they exist only for hand-written ProviderRegistrations), and the
- * ACP shim maps non-edit tool calls to `detail.type:"unknown"`.
+ * In addition to the card, the transformer forwards every snapshot to the
+ * subsession hub (`server/subsessions.ts`), which drives Paseo's NATIVE
+ * sub-agent tabs: the wrapped registration negotiates `session.subsession`
+ * and the hub synthesizes the child `session.opened` / `timeline.item` /
+ * `session.turn` / `session.closed` protocol the daemon translates into
+ * `provider_subagent` events. The card stays as the inline summary inside the
+ * parent's `Agent` dispatch row; the tab holds the full sub-agent view.
  *
  * The item below uses `detail.type:"sub_agent"` — Paseo's built-in renderer
  * (bot icon, "<type>: <description>" title, expandable activity log) — and
@@ -157,13 +160,24 @@ export function subagentTimelineUpdate(
 }
 
 /**
- * The transformer registered with `runAcpProvider`. Pure: unknown
- * notifications return null and are left untouched for other consumers.
+ * Build the transformer registered with `runAcpProvider`. Pure with respect to
+ * the card: unknown notifications return null and are left untouched for other
+ * consumers. Snapshots for the `_zcode/subagent` method are additionally
+ * forwarded to the subsession hub, which drives the native sub-agent tabs.
  */
-export const zcodeSubagentTransformer: AcpTransformer = {
-  notification(notification) {
-    if (notification.method !== ZCODE_SUBAGENT_METHOD) return null;
-    if (!notification.params || typeof notification.params !== "object") return null;
-    return subagentTimelineUpdate(notification.params as ZcodeSubagentSnapshot);
-  },
-};
+export function createZcodeSubagentTransformer(
+  forwardSnapshot: (boundarySessionId: string, snapshot: unknown) => void,
+): AcpTransformer {
+  return {
+    notification(notification, context) {
+      if (notification.method !== ZCODE_SUBAGENT_METHOD) return null;
+      if (!notification.params || typeof notification.params !== "object") return null;
+      try {
+        forwardSnapshot(context.sessionId, notification.params);
+      } catch {
+        // Tab wiring must never break the card (see AGENTS.md).
+      }
+      return subagentTimelineUpdate(notification.params as ZcodeSubagentSnapshot);
+    },
+  };
+}

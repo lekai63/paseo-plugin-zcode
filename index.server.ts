@@ -6,7 +6,8 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 
 import { getZcodeQuota } from "./server/quota";
-import { zcodeSubagentTransformer } from "./server/subagents";
+import { createZcodeSubagentTransformer } from "./server/subagents";
+import { wrapWithSubsessions, zcodeSubagentHub } from "./server/subsessions";
 import { zcodeQuotaRpc } from "./shared/quota";
 
 // Paseo evaluates plugin bundles with an injected `require` and without
@@ -136,22 +137,32 @@ function resolveLaunch(): { command: readonly [string, string] } {
 }
 
 export default function contribute(server: PluginServerContext) {
+  // Sub-agent activity has two surfaces, both fed by the same `_zcode/subagent`
+  // vendor notifications from zcode-acp:
+  //   - the inline `sub_agent` card inside the parent's Agent dispatch row
+  //     (the transformer below), and
+  //   - Paseo's native sub-agent TABS, driven by the subsession wrapper, which
+  //     negotiates `session.subsession` and opens a child provider session per
+  //     zcode sub-agent (see server/subsessions.ts).
   server.registerProvider(
-    runAcpProvider({
-      id: "zcode",
-      label: "ZCode",
-      icon: "icon.svg",
-      description:
-        "ZCode agent backend (Z.ai GLM) via the npm zcode-acp-server bridge",
-      command: resolveLaunch().command,
-      // First bridge start can take 30s+ while npm warms up; widen the
-      // handshake window.
-      acpOptions: { startupTimeoutMs: 180_000 },
-      // Sub-agent activity: zcode-acp publishes `_zcode/subagent` vendor
-      // notifications; this transformer injects them as `sub_agent` timeline
-      // cards (see server/subagents.ts for why that is the only route).
-      transformers: [zcodeSubagentTransformer],
-    }),
+    wrapWithSubsessions(
+      runAcpProvider({
+        id: "zcode",
+        label: "ZCode",
+        icon: "icon.svg",
+        description:
+          "ZCode agent backend (Z.ai GLM) via the npm zcode-acp-server bridge",
+        command: resolveLaunch().command,
+        // First bridge start can take 30s+ while npm warms up; widen the
+        // handshake window.
+        acpOptions: { startupTimeoutMs: 180_000 },
+        transformers: [
+          createZcodeSubagentTransformer((boundarySessionId, snapshot) => {
+            zcodeSubagentHub.handleSnapshot(boundarySessionId, snapshot);
+          }),
+        ],
+      }),
+    ),
   );
   // GLM Coding Plan quota for the composer pill (optionally refreshed via the
   // popover's Refresh button, which passes `force`).

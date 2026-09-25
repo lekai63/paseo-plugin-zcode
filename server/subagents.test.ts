@@ -15,10 +15,10 @@ import type { ProviderTimelineItem } from "@getpaseo/plugin/server/provider";
 import {
   ZCODE_SUBAGENT_METHOD,
   buildSubagentLog,
+  createZcodeSubagentTransformer,
   mapSubagentCardStatus,
   subagentCallId,
   subagentTimelineUpdate,
-  zcodeSubagentTransformer,
 } from "./subagents.ts";
 
 /**
@@ -115,7 +115,11 @@ test("a snapshot without identity produces no update", () => {
 });
 
 test("the transformer only claims its own vendor method", () => {
-  const claimed = zcodeSubagentTransformer.notification?.(
+  const forwarded: Array<[string, unknown]> = [];
+  const transformer = createZcodeSubagentTransformer((boundarySessionId, snapshot) => {
+    forwarded.push([boundarySessionId, snapshot]);
+  });
+  const claimed = transformer.notification?.(
     {
       method: ZCODE_SUBAGENT_METHOD,
       params: { parentToolCallId: "call_dispatch", agentId: "agent_a1", status: "running" },
@@ -123,20 +127,27 @@ test("the transformer only claims its own vendor method", () => {
     { sessionId: "acp_1" },
   );
   assert.ok(asTimelineItem(claimed));
+  assert.deepEqual(forwarded, [
+    ["acp_1", { parentToolCallId: "call_dispatch", agentId: "agent_a1", status: "running" }],
+  ]);
 
   // Foreign (real ACP) notifications must pass through untouched.
   assert.equal(
-    zcodeSubagentTransformer.notification?.(
+    transformer.notification?.(
       { method: "session/update", params: { sessionId: "acp_1" } },
       { sessionId: "acp_1" },
     ),
     null,
   );
   assert.equal(
-    zcodeSubagentTransformer.notification?.(
+    transformer.notification?.(
       { method: ZCODE_SUBAGENT_METHOD, params: null },
       { sessionId: "acp_1" },
     ),
     null,
+  );
+  assert.deepEqual(
+    forwarded.filter(([method]) => method !== "acp_1"),
+    [],
   );
 });
