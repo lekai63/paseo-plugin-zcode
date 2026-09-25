@@ -8,6 +8,7 @@ import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 import { getZcodeQuota } from "./server/quota";
 import { createZcodeSubagentTransformer } from "./server/subagents";
 import { wrapWithSubsessions, zcodeSubagentHub } from "./server/subsessions";
+import { createZcodeToolCallTransformer } from "./server/tool-calls";
 import { zcodeQuotaRpc } from "./shared/quota";
 
 // Paseo evaluates plugin bundles with an injected `require` and without
@@ -157,6 +158,7 @@ export default function contribute(server: PluginServerContext) {
         // handshake window.
         acpOptions: { startupTimeoutMs: 180_000 },
         transformers: [
+          createZcodeToolCallTransformer(),
           createZcodeSubagentTransformer((boundarySessionId, snapshot) => {
             zcodeSubagentHub.handleSnapshot(boundarySessionId, snapshot);
           }),
