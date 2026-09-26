@@ -40,6 +40,14 @@ client 入口会为每个 `zcode` agent 在输入框（context meter 旁）加�
 
 桥锁定在 `lekai63/zcode-acp` 的提交（见 `package-lock.json`）。要升级：在 fork 的 `paseo` 分支上同步上游并修改，然后更新本仓库的依赖 ref 与锁文件。
 
+## 内置(vendored)ACP 适配层与 steer 支持
+
+`server/acp-adapter/` 是 paseo v0.9.2 `runAcpProvider` 适配层（`packages/plugin/src/server/acp.ts` + `acp-internal/connection.ts`，Apache-2.0）的本地拷贝，附带官方 shim 缺失的一项能力：**`prompt.steer`**。paseo 默认发送行为就是 `steer`，而官方 ACP 适配层从不声明该能力，导致对 ACP 后端 agent 的运行中插话直接报 "Provider does not support prompt.steer"。
+
+fork 的行为是"转向"而非拒绝：`delivery: "steer"` 的 prompt 复用运行中 turn 的身份，立即发出新的 `session/prompt`（zcode-acp 桥会抢占式停掉被取代的后端 turn），返回 `prompt_result { type: "steer" }`；代数计数器会吞掉被取代请求的终止事件，turn 不会显示为已取消。`clearPendingPermissions` 会在转向前取消挂起的权限弹窗。这是基于抢占的 steer——模型带着完整历史重跑，不是生成中注入（app-server 0.16+ 已无注入 API）。
+
+除 import 路径与一处构造器参数属性展开（Node type-stripping 只支持可擦除语法）外，其余与上游一致。升级 `@getpaseo/plugin` 时，请 diff 对应 tag 的两个源文件与本地拷贝，按 `Local change vs upstream` 标记重新套用。`server/acp-adapter.test.ts` 用一个模拟抢占的假 agent 覆盖了 steer 契约。
+
 ## 桥的解析机制
 
 Paseo 以注入 `require`、无 `__dirname`/`import.meta` 的方式执行插件 bundle，且 daemon 可能由 node CLI 安装或桌面 app（Electron）托管。插件**优先**使用检出内的桥副本 `checkout/node_modules/zcode-acp-server/dist/cli.js`（配对该检出所用的 `node`），只有在检出缺失时才回退到常见 npm 全局根目录（fnm、nvm、`/usr/local`、Homebrew）。全程不依赖 `PATH`，桥也永远不会经由 Electron 二进制启动。

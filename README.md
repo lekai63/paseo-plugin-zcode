@@ -58,6 +58,14 @@ understand the vendor method ignore it, so Zed/Martty behaviour is unchanged.
 
 The bridge is pinned to a commit of `lekai63/zcode-acp` (see `package-lock.json`). To upgrade, sync upstream on the fork's `paseo` branch, make the changes there, then update this repo's dependency ref and lockfile.
 
+## Vendored ACP adapter (steer support)
+
+`server/acp-adapter/` is a vendored copy of paseo v0.9.2's `runAcpProvider` adapter (`packages/plugin/src/server/acp.ts` + `acp-internal/connection.ts`, Apache-2.0), carrying one local feature the stock shim lacks: **`prompt.steer`**. Paseo's default send behavior is `steer`, and the stock ACP adapter never advertises that capability, so a mid-turn message to an ACP-backed agent fails with "Provider does not support prompt.steer".
+
+The fork steers instead of refusing: a `delivery: "steer"` prompt reuses the running turn's identity, sends the new `session/prompt` straight away (the zcode-acp bridge preempts the superseded backend turn), reports `prompt_result { type: "steer" }`, and a generation counter swallows the superseded request's terminal event so the turn never reads as cancelled. `clearPendingPermissions` cancels outstanding permission popups before steering. This is preempt-based steering — the model re-runs with full history — not mid-generation injection (app-server 0.16+ has no inject API).
+
+Upstream files are otherwise untouched apart from import paths and one constructor-parameter-property expansion (Node type-stripping is erasable-syntax only). When bumping `@getpaseo/plugin`, diff the pinned tag's two source files against the vendored copies and re-apply the `Local change vs upstream` markers. `server/acp-adapter.test.ts` covers the steer contract against a fake preempting agent.
+
 ## How the bridge is resolved
 
 Paseo evaluates plugin bundles with an injected `require` and no `__dirname`/`import.meta`, and the daemon can be hosted either by a node CLI install or by the desktop app (Electron). The plugin **prefers** the checkout-local copy `checkout/node_modules/zcode-acp-server/dist/cli.js` (paired with that checkout's `node`), and only falls back to the well-known npm global roots — fnm, nvm, `/usr/local`, Homebrew — when the checkout is missing. Nothing depends on `PATH`, so the provider works no matter how the daemon was started, and the bridge never launches through an Electron binary.

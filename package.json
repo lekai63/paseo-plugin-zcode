@@ -2,20 +2,21 @@
   "name": "paseo-plugin-zcode",
   "version": "0.4.0",
   "devDependencies": {
-    "@getpaseo/plugin": "0.8.0",
+    "@getpaseo/plugin": "0.9.2",
     "@types/node": "^26.5.0",
     "@types/react": "~19.2.0",
     "react": "19.1.0",
     "react-native": "0.81.5",
-    "typescript": "^5.9.3",
-    "zod": "^4.4.3"
+    "typescript": "^5.9.3"
   },
-  "private": true,
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test server/*.test.ts"
   },
   "dependencies": {
-    "zcode-acp-server": "git+https://github.com/lekai63/zcode-acp.git#paseo"
-  }
+    "zcode-acp-server": "git+https://github.com/lekai63/zcode-acp.git#paseo",
+    "@agentclientprotocol/sdk": "^1.4.0",
+    "zod": "^4.4.3"
+  },
+  "private": true
 }

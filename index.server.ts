@@ -3,7 +3,11 @@ import os from "node:os";
 import path from "node:path";
 
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { runAcpProvider } from "@getpaseo/plugin/server/acp";
+// Vendored fork of @getpaseo/plugin/server/acp (paseo v0.9.2) carrying
+// prompt.steer support — see server/acp-adapter/connection.ts for the local
+// changes. Upstream refuses steer prompts outright (the daemon's default
+// sendBehavior is "steer", so mid-turn sends to ACP agents error out).
+import { runAcpProvider } from "./server/acp-adapter/acp";
 
 import { getZcodeQuota } from "./server/quota";
 import { createZcodeSubagentTransformer } from "./server/subagents";
