@@ -4,7 +4,6 @@
  * the `prompt.steer` additions this fork carries. Re-sync when upgrading the
  * pinned `@getpaseo/plugin` dependency.
  */
-import type { JsonValue } from "@getpaseo/protocol/agent-types";
 import type {
   ProviderCatalog,
   ProviderCommand,
@@ -14,6 +13,12 @@ import type {
   ProviderTimelineItem,
 } from "@getpaseo/plugin/server/provider";
 import { createAcpProviderConnection } from "./connection.ts";
+
+// Local change: inlined from @getpaseo/protocol/agent-types so the plugin does
+// not need that package at build time (the daemon only injects @getpaseo/plugin).
+export type JsonValue = null | boolean | number | string | JsonValue[] | {
+  [key: string]: JsonValue;
+};
 
 interface RunAcpProviderBaseOptions {
   id: string;
