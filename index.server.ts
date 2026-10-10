@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-// Vendored fork of @getpaseo/plugin/server/acp (paseo v0.9.2) carrying
+import type { ProviderStatus, ProviderStatusRequest } from "@getpaseo/plugin/server/provider";
+// Vendored fork of @getpaseo/plugin/server/acp (paseo v0.11.2) carrying
 // prompt.steer support — see server/acp-adapter/connection.ts for the local
 // changes. Upstream refuses steer prompts outright (the daemon's default
 // sendBehavior is "steer", so mid-turn sends to ACP agents error out).
@@ -13,7 +14,10 @@ import { getZcodeQuota } from "./server/quota";
 import { createZcodeSubagentTransformer } from "./server/subagents";
 import { wrapWithSubsessions, zcodeSubagentHub } from "./server/subsessions";
 import { createZcodeToolCallTransformer } from "./server/tool-calls";
+import { createZcodeUsageSource } from "./server/usage";
 import { zcodeQuotaRpc } from "./shared/quota";
+
+const PROVIDER_ID = "zcode";
 
 // Paseo evaluates plugin bundles with an injected `require` and without
 // `__dirname` or a usable `import.meta`. The daemon may be hosted by a node
@@ -22,6 +26,10 @@ import { zcodeQuotaRpc } from "./shared/quota";
 // well-known npm global roots — pairing each root with its own `node`
 // binary so the bridge never launches through an Electron binary or a
 // PATH-dependent lookup.
+//
+// The result is the provider's default `command`: the daemon applies any
+// `agents.providers.zcode` command/env overrides on top of it and hands the
+// resolved launch to every connection.
 
 const RELATIVE_ENTRY = path.join("zcode-acp-server", "dist", "cli.js");
 
@@ -29,6 +37,11 @@ const RELATIVE_ENTRY = path.join("zcode-acp-server", "dist", "cli.js");
 // global roots are already `node_modules` directories themselves, so the two
 // entry shapes differ by that one segment.
 const CHECKOUT_ENTRY = path.join("node_modules", RELATIVE_ENTRY);
+
+// With no install found, fall back to the package's bin on PATH: the daemon
+// then reports "not found" as the provider's diagnostic instead of the whole
+// plugin failing to load.
+const FALLBACK_COMMAND = ["zcode-acp-server"] as const;
 
 interface GlobalInstall {
   nodeBin: string;
@@ -117,7 +130,7 @@ function checkoutInstalls(): string[] {
   return [];
 }
 
-function resolveLaunch(): { command: readonly [string, string] } {
+function resolveLaunch(): { command: readonly [string, ...string[]] } {
   for (const cli of checkoutInstalls()) {
     return { command: [nodeForCli(cli), cli] };
   }
@@ -136,9 +149,21 @@ function resolveLaunch(): { command: readonly [string, string] } {
       return { command: [install.nodeBin, cli] };
     }
   }
-  throw new Error(
-    "zcode-acp-server was not found; install it with `npm i -g zcode-acp-server`",
-  );
+  return { command: FALLBACK_COMMAND };
+}
+
+// The daemon only checks that the launch executable resolves — `node` for the
+// default `[node, <bridge>/dist/cli.js]` launch — so also check the bridge
+// script it runs.
+async function bridgeStatus({ launch }: ProviderStatusRequest): Promise<ProviderStatus> {
+  const script = launch?.args[0];
+  if (script && path.isAbsolute(script) && !fs.existsSync(script)) {
+    return {
+      available: false,
+      diagnostic: `zcode-acp-server bridge not found at ${script}; install it with \`npm i -g zcode-acp-server\``,
+    };
+  }
+  return { available: true };
 }
 
 export default function contribute(server: PluginServerContext) {
@@ -150,9 +175,9 @@ export default function contribute(server: PluginServerContext) {
   //     negotiates `session.subsession` and opens a child provider session per
   //     zcode sub-agent (see server/subsessions.ts).
   server.registerProvider(
-    wrapWithSubsessions(
-      runAcpProvider({
-        id: "zcode",
+    wrapWithSubsessions({
+      ...runAcpProvider({
+        id: PROVIDER_ID,
         label: "ZCode",
         icon: "icon.svg",
         description:
@@ -168,10 +193,13 @@ export default function contribute(server: PluginServerContext) {
           }),
         ],
       }),
-    ),
+      status: bridgeStatus,
+    }),
   );
   // GLM Coding Plan quota for the composer pill (optionally refreshed via the
-  // popover's Refresh button, which passes `force`).
+  // popover's Refresh button, which passes `force`), and the same windows as a
+  // usage source for Paseo's Usage modal and sidebar.
   server.handle(zcodeQuotaRpc, getZcodeQuota);
+  server.registerUsageSource(createZcodeUsageSource(PROVIDER_ID));
   return () => {};
 }

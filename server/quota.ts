@@ -4,10 +4,11 @@ import path from "node:path";
 
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 
-import { zcodeQuotaRpc, type ZcodeQuotaSnapshot } from "../shared/quota";
+import { zcodeQuotaRpc, type ZcodeQuotaSnapshot } from "../shared/quota.ts";
 
 /**
- * GLM Coding Plan quota reader for the Paseo composer pill.
+ * GLM Coding Plan quota reader for the Paseo composer pill and the `zcode`
+ * usage source (server/usage.ts).
  *
  * The data source is the same one the ZCode desktop app and `zcode-acp quota`
  * use: the active provider's apiKey from `~/.zcode/v2/config.json` against the
@@ -16,14 +17,12 @@ import { zcodeQuotaRpc, type ZcodeQuotaSnapshot } from "../shared/quota";
  * bundle independent of the bridge's dist layout.
  */
 
-const ZCODE_CONFIG_PATH = path.join(os.homedir(), ".zcode", "v2", "config.json");
-
 const QUOTA_PATH = "/api/monitor/usage/quota/limit";
 const HOST_CN = "https://open.bigmodel.cn";
 const HOST_INTL = "https://api.z.ai";
 
 const REQUEST_TIMEOUT_MS = 8_000;
-/** Serve a cached snapshot for this long; the pill polls once a minute. */
+/** Serve a cached reading for this long; the pill polls once a minute. */
 const CACHE_TTL_MS = 10_000;
 
 const AUTH_FAILURE_RE = /authorization|auth|token|鉴权|授权|未登录/i;
@@ -38,10 +37,24 @@ interface ZcodeConfig {
   provider?: Record<string, ZcodeProviderEntry>;
 }
 
-interface ActiveProvider {
+export interface ActiveProvider {
   id: string;
   baseURL: string;
   apiKey: string;
+}
+
+/** Where a ZCode login lives: a store locator, never a credential. */
+export interface ZcodeLogin {
+  /** `<ZCODE_HOME>/v2/config.json`. */
+  configPath: string;
+  /** Provider id pinned by `ZCODE_PROVIDER`; otherwise the first enabled provider wins. */
+  provider?: string;
+}
+
+/** A quota snapshot plus the upstream HTTP status, for usage-report mapping. */
+export interface QuotaReading {
+  snapshot: ZcodeQuotaSnapshot;
+  httpStatus: number | null;
 }
 
 interface RawLimit {
@@ -56,15 +69,24 @@ interface RawLimit {
 }
 
 /**
+ * The login a bridge started with `env` reads: `ZCODE_HOME` replaces
+ * `~/.zcode` outright and `ZCODE_PROVIDER` pins a provider, as in zcode-acp.
+ */
+export function zcodeLoginFromEnv(env: Readonly<Record<string, string | undefined>>): ZcodeLogin {
+  const home = env.ZCODE_HOME || path.join(env.HOME || env.USERPROFILE || os.homedir(), ".zcode");
+  const provider = env.ZCODE_PROVIDER?.trim();
+  return { configPath: path.join(home, "v2", "config.json"), ...(provider ? { provider } : {}) };
+}
+
+/**
  * Select the active provider like the bridge does: `ZCODE_PROVIDER` pins one
  * by id; otherwise the first enabled provider wins.
  */
-function loadActiveProvider(): ActiveProvider | null {
+export function loadActiveProvider(login: ZcodeLogin): ActiveProvider | null {
   try {
-    const cfg = JSON.parse(fs.readFileSync(ZCODE_CONFIG_PATH, "utf8")) as ZcodeConfig;
-    const pinned = process.env.ZCODE_PROVIDER;
+    const cfg = JSON.parse(fs.readFileSync(login.configPath, "utf8")) as ZcodeConfig;
     for (const [id, entry] of Object.entries(cfg.provider ?? {})) {
-      if (entry?.enabled && (!pinned || id === pinned)) {
+      if (entry?.enabled && (!login.provider || id === login.provider)) {
         return {
           id,
           baseURL: entry.options?.baseURL ?? "",
@@ -183,7 +205,10 @@ interface QuotaEnvelope {
   data?: { level?: string; limits?: unknown };
 }
 
-async function queryQuota(): Promise<ZcodeQuotaSnapshot> {
+/** `error` of an `unavailable` snapshot whose plan reports no quota windows. */
+export const NO_QUOTA_WINDOWS = "quota API returned no usable windows";
+
+async function queryQuota(login: ZcodeLogin): Promise<QuotaReading> {
   const base: ZcodeQuotaSnapshot = {
     status: "unavailable",
     level: "",
@@ -193,9 +218,9 @@ async function queryQuota(): Promise<ZcodeQuotaSnapshot> {
     error: null,
   };
 
-  const provider = loadActiveProvider();
+  const provider = loadActiveProvider(login);
   if (!provider?.apiKey) {
-    return { ...base, error: "no apiKey found in ~/.zcode/v2/config.json" };
+    return { snapshot: { ...base, error: `no apiKey found in ${login.configPath}` }, httpStatus: null };
   }
 
   const host = quotaHost(provider.baseURL);
@@ -216,9 +241,12 @@ async function queryQuota(): Promise<ZcodeQuotaSnapshot> {
     text = await resp.text();
   } catch (error) {
     return {
-      ...base,
-      sourceHost: host,
-      error: error instanceof Error ? error.message : String(error),
+      snapshot: {
+        ...base,
+        sourceHost: host,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      httpStatus: null,
     };
   } finally {
     clearTimeout(timer);
@@ -231,58 +259,68 @@ async function queryQuota(): Promise<ZcodeQuotaSnapshot> {
     // Non-JSON body — classified as unavailable below.
   }
 
+  const reading = (snapshot: ZcodeQuotaSnapshot): QuotaReading => ({ snapshot, httpStatus: status });
+
   if (status === 429 || RATE_LIMITED_RE.test(text)) {
-    return { ...base, status: "rate_limited", sourceHost: host };
+    return reading({ ...base, status: "rate_limited", sourceHost: host });
   }
   if (status === 401 || status === 403) {
-    return { ...base, status: "auth_error", sourceHost: host };
+    return reading({ ...base, status: "auth_error", sourceHost: host });
   }
   if (status < 200 || status >= 300) {
-    return { ...base, sourceHost: host, error: `GLM quota API returned HTTP ${status}` };
+    return reading({ ...base, sourceHost: host, error: `GLM quota API returned HTTP ${status}` });
   }
 
   const payload = json as QuotaEnvelope | null;
   if (!payload || typeof payload !== "object" || payload.success !== true) {
     const message = payload?.msg ?? "";
     if (payload?.code === 1001 || payload?.code === 401 || AUTH_FAILURE_RE.test(message)) {
-      return { ...base, status: "auth_error", sourceHost: host, error: message || null };
+      return reading({ ...base, status: "auth_error", sourceHost: host, error: message || null });
     }
     if (RATE_LIMITED_RE.test(message)) {
-      return { ...base, status: "rate_limited", sourceHost: host, error: message || null };
+      return reading({ ...base, status: "rate_limited", sourceHost: host, error: message || null });
     }
-    return { ...base, sourceHost: host, error: message || "quota API rejected the request" };
+    return reading({ ...base, sourceHost: host, error: message || "quota API rejected the request" });
   }
 
   const items = parseItems(payload);
   if (items.length === 0) {
-    return { ...base, sourceHost: host, error: "quota API returned no usable windows" };
+    return reading({ ...base, sourceHost: host, error: NO_QUOTA_WINDOWS });
   }
 
-  return {
+  return reading({
     ...base,
     status: "ok",
     level: typeof payload.data?.level === "string" ? payload.data.level : "",
     sourceHost: host,
     items,
-  };
+  });
 }
 
-let cache: { at: number; snapshot: ZcodeQuotaSnapshot } | null = null;
-let inFlight: Promise<ZcodeQuotaSnapshot> | null = null;
+// Per login, so the pill and the usage source share one upstream request.
+const cache = new Map<string, { at: number; reading: QuotaReading }>();
+const inFlight = new Map<string, Promise<QuotaReading>>();
+
+export async function readZcodeQuota(login: ZcodeLogin, force = false): Promise<QuotaReading> {
+  const key = `${login.configPath}\0${login.provider ?? ""}`;
+  const cached = cache.get(key);
+  if (!force && cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.reading;
+  const pending = inFlight.get(key);
+  if (pending) return pending;
+  const next = queryQuota(login)
+    .then((reading) => {
+      cache.set(key, { at: Date.now(), reading });
+      return reading;
+    })
+    .finally(() => {
+      inFlight.delete(key);
+    });
+  inFlight.set(key, next);
+  return next;
+}
 
 export async function getZcodeQuota(
   input: RpcInput<typeof zcodeQuotaRpc>,
 ): Promise<RpcOutput<typeof zcodeQuotaRpc>> {
-  const now = Date.now();
-  if (!input.force && cache && now - cache.at < CACHE_TTL_MS) return cache.snapshot;
-  if (inFlight) return inFlight;
-  inFlight = queryQuota()
-    .then((snapshot) => {
-      cache = { at: Date.now(), snapshot };
-      return snapshot;
-    })
-    .finally(() => {
-      inFlight = null;
-    });
-  return inFlight;
+  return (await readZcodeQuota(zcodeLoginFromEnv(process.env), input.force)).snapshot;
 }

@@ -1,7 +1,9 @@
 {
   "id": "paseo-plugin-zcode",
+  "name": "ZCode",
+  "description": "ZCode (Z.ai GLM) coding agent over ACP, with GLM Coding Plan usage",
   "requirements": {
-    "paseo": ">=0.8.0"
+    "paseo": ">=0.11.0"
   },
   "build": [
     [

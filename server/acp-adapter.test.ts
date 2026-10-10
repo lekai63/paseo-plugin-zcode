@@ -14,7 +14,12 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import type { ProviderConnection, ProviderEvent, ProviderInput } from "@getpaseo/plugin/server/provider";
+import type {
+  ProviderConnection,
+  ProviderEvent,
+  ProviderInput,
+  ProviderLaunch,
+} from "@getpaseo/plugin/server/provider";
 
 import { runAcpProvider } from "./acp-adapter/acp.ts";
 
@@ -40,6 +45,7 @@ lines.on("line", (line) => {
   if (message.method === "initialize") {
     send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: message.params.protocolVersion, agentCapabilities: {} } });
   } else if (message.method === "session/new") {
+    send({ jsonrpc: "2.0", method: "_test/env", params: { launch: process.env.FAKE_LAUNCH_MARK ?? null, session: process.env.FAKE_SESSION_MARK ?? null } });
     send({ jsonrpc: "2.0", id: message.id, result: { sessionId: "native-1", modes: null, configOptions: [] } });
   } else if (message.method === "session/prompt") {
     pendingPrompts.push(message.id);
@@ -90,7 +96,15 @@ interface Harness {
   close(): Promise<void>;
 }
 
-async function connectFakeAgent(): Promise<Harness> {
+interface ConnectOptions {
+  /** Registration default; the fake agent script when omitted. */
+  command?: readonly [string, ...string[]];
+  /** Daemon-resolved launch; receives the fake agent script as its last arg. */
+  launch?: (script: string) => ProviderLaunch;
+  sessionEnv?: Record<string, string>;
+}
+
+async function connectFakeAgent(options: ConnectOptions = {}): Promise<Harness> {
   const script = path.join(
     os.tmpdir(),
     `paseo-plugin-zcode-fake-acp-${process.pid}-${Math.random().toString(36).slice(2)}.cjs`,
@@ -100,7 +114,7 @@ async function connectFakeAgent(): Promise<Harness> {
   const registration = runAcpProvider({
     id: "fake",
     label: "Fake",
-    command: [process.execPath, script],
+    command: options.command ?? [process.execPath, script],
     transformers: [
       {
         notification(notification) {
@@ -111,6 +125,7 @@ async function connectFakeAgent(): Promise<Harness> {
     ],
   });
   const connection = await registration.connect({
+    launch: options.launch?.(script),
     versions: [1],
     capabilities: ["prompt.message", "prompt.steer", "session.configure", "permission"],
   });
@@ -151,7 +166,13 @@ async function connectFakeAgent(): Promise<Harness> {
     requestId: "open-1",
     sessionId: "session-1",
     history: "skip",
-    config: { cwd: os.tmpdir(), env: {}, mcpServers: {}, settings: {}, persist: false },
+    config: {
+      cwd: os.tmpdir(),
+      env: options.sessionEnv ?? {},
+      mcpServers: {},
+      settings: {},
+      persist: false,
+    },
   });
   await harness.waitFor(
     (event) => event.type === "session.ready",
@@ -171,6 +192,30 @@ function textPrompt(clientMessageId: string, text: string, delivery?: "steer") {
     },
   };
 }
+
+test("the registration declares its command for daemon launch resolution", () => {
+  const registration = runAcpProvider({ id: "fake", label: "Fake", command: ["zcode-acp-server"] });
+  assert.deepEqual(registration.command, ["zcode-acp-server"]);
+});
+
+test("spawns the daemon-resolved launch with the session env overlaid", async () => {
+  const harness = await connectFakeAgent({
+    // Unspawnable on purpose: only the launch can start the agent.
+    command: [path.join(os.tmpdir(), "paseo-plugin-zcode-missing-bridge")],
+    launch: (script) => ({
+      command: process.execPath,
+      args: [script],
+      env: { PATH: process.env.PATH ?? "", FAKE_LAUNCH_MARK: "launch", FAKE_SESSION_MARK: "launch" },
+    }),
+    sessionEnv: { FAKE_SESSION_MARK: "session" },
+  });
+  try {
+    const env = harness.vendorNotifications.find((entry) => entry.method === "_test/env");
+    assert.deepEqual(env?.params, { launch: "launch", session: "session" });
+  } finally {
+    await harness.close();
+  }
+});
 
 test("negotiates prompt.steer when the daemon offers it", async () => {
   const harness = await connectFakeAgent();

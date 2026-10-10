@@ -1,5 +1,5 @@
 /**
- * Vendored from paseo v0.9.2 `packages/plugin/src/server/acp.ts` (Apache-2.0,
+ * Vendored from paseo v0.11.2 `packages/plugin/src/server/acp.ts` (Apache-2.0,
  * © Mohamed Boudra). Local changes: import paths only — see connection.ts for
  * the `prompt.steer` additions this fork carries. Re-sync when upgrading the
  * pinned `@getpaseo/plugin` dependency.
@@ -126,6 +126,7 @@ export function runAcpProvider(options: RunAcpProviderOptions): ProviderRegistra
     label: options.label,
     description: options.description,
     icon: options.icon,
+    command: options.command,
     connect(request) {
       return createAcpProviderConnection(options, request);
     },
