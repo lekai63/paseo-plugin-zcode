@@ -15,7 +15,10 @@ import { wrapWithSubsessions, zcodeSubagentHub } from "./server/subsessions";
 import { createZcodeToolCallTransformer } from "./server/tool-calls";
 import { createZcodeUsageSource } from "./server/usage";
 
-const PROVIDER_ID = "zcode";
+// `zcode-acp`, not `zcode`: the bare id belongs to ZCode providers that drive
+// the official Services Server directly (e.g. supermomonga/zcode-provider), so
+// both can run on one daemon.
+const PROVIDER_ID = "zcode-acp";
 
 // Paseo evaluates plugin bundles with an injected `require` and without
 // `__dirname` or a usable `import.meta`. The daemon may be hosted by a node
@@ -176,7 +179,7 @@ export default function contribute(server: PluginServerContext) {
     wrapWithSubsessions({
       ...runAcpProvider({
         id: PROVIDER_ID,
-        label: "ZCode",
+        label: "ZCode (ACP)",
         icon: "icon.svg",
         description:
           "ZCode agent backend (Z.ai GLM) via the npm zcode-acp-server bridge",

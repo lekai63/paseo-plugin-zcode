@@ -133,7 +133,7 @@ export function toUsageReport({ snapshot, httpStatus }: QuotaReading): UsageRepo
 export function createZcodeUsageSource(providerId: string): UsageSourceRegistration {
   return {
     id: "zcode",
-    label: "ZCode",
+    label: "ZCode (ACP)",
     icon: "icon.svg",
     input: inputSchema,
     async discover(scope) {

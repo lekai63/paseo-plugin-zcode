@@ -23,7 +23,7 @@ paseo plugin ls        # expect paseo-plugin-zcode = running
 Then run agents as usual:
 
 ```bash
-paseo run --provider zcode "Fix the failing test"
+paseo run --provider zcode-acp "Fix the failing test"
 ```
 
 ## Usage source
@@ -78,7 +78,7 @@ The resolved `[node, cli.js]` pair is the provider's declared default `command`.
 
 ## Notes & limitations
 
-- The provider id is `zcode`. An `agents.providers.zcode` entry in `~/.paseo/config.json` **without** `extends` customizes this plugin's provider (`enabled`, `command`, `env`, label, models); an entry **with** `extends` defines a separate provider that shadows the plugin.
+- The provider id is `zcode-acp` (label "ZCode (ACP)"); the bare `zcode` id is left to providers that drive ZCode's Services Server directly, so both can be installed on one daemon. Agents created before the rename carry provider `zcode` and must be migrated to `zcode-acp` in the daemon's agent records. An `agents.providers.zcode-acp` entry in `~/.paseo/config.json` **without** `extends` customizes this plugin's provider (`enabled`, `command`, `env`, label, models); an entry **with** `extends` defines a separate provider that shadows the plugin.
 - The first bridge start can take a while (npm warm-up); the plugin allows 180 s for the ACP handshake.
 - The icon is Z.ai's official logo mark (source: `z-cdn.chatglm.cn/z-ai/static/logo.svg`), used nominatively to indicate which agent this plugin wraps. Not affiliated with or endorsed by Zhipu AI.
 

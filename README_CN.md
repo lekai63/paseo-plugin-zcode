@@ -23,7 +23,7 @@ paseo plugin ls        # 期望 paseo-plugin-zcode = running
 然后正常派活：
 
 ```bash
-paseo run --provider zcode "修复失败的测试"
+paseo run --provider zcode-acp "修复失败的测试"
 ```
 
 ## 用量来源（usage source）
@@ -58,7 +58,7 @@ Paseo 以注入 `require`、无 `__dirname`/`import.meta` 的方式执行插件 
 
 ## 已知限制
 
-- provider id 为 `zcode`。`~/.paseo/config.json` 中**不带** `extends` 的 `agents.providers.zcode` 条目会定制本插件的 provider（`enabled`、`command`、`env`、名称、模型）；**带** `extends` 的条目则定义一个独立 provider 并遮蔽本插件。
+- provider id 为 `zcode-acp`（显示名 "ZCode (ACP)"）；`zcode` 这个 id 留给直接驱动 ZCode Services Server 的 provider，两者可以装在同一个 daemon 上。改名前创建的 agent 记录里 provider 是 `zcode`，需要在 daemon 的 agent 记录里迁移为 `zcode-acp`。`~/.paseo/config.json` 中**不带** `extends` 的 `agents.providers.zcode-acp` 条目会定制本插件的 provider（`enabled`、`command`、`env`、名称、模型）；**带** `extends` 的条目则定义一个独立 provider 并遮蔽本插件。
 - 桥首次启动可能较慢（npm 预热），插件为 ACP 握手预留了 180 秒。
 - 图标为 Z.ai 官方 logo（来源：`z-cdn.chatglm.cn/z-ai/static/logo.svg`），仅用于指示本插件所包装的 agent。与智谱 AI 无隶属或背书关系。
 
