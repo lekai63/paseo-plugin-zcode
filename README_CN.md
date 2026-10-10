@@ -32,6 +32,20 @@ server 入口注册了一个 `zcode-acp` **usage source**（usage source 的 id 
 
 账号即该 provider（`ZCode · <provider>`），账号 key 是配置路径 + provider id 的哈希，上报的 input 只包含这个存储定位符——`fetch` 每次都重新读取 apiKey，daemon 会把报告缓存五分钟。会话级发现会从该 zcode 会话自己的启动环境里解析 `ZCODE_HOME` / `ZCODE_PROVIDER`。
 
+## 设置页面
+
+**设置 → 插件 → ZCode (ACP)** 下有两个页面。数据由插件服务端提供：它在一个短生命周期的 `node` 子进程里调用桥自带的 `dist/` 模块（插件 bundle 无法直接 import 桥的 ESM 模块）。
+
+- **Runtime**：已安装的 ZCode 桌面版版本（读取 `app.asar` 里的 package.json，和桥报告的一致）及其自带的 agent CLI、桥的版本和锁定的 commit、Node.js / Bun。
+  - **Check for updates** 读取官方发布清单，并给出本平台安装包的下载链接。安装 `.deb`/`.rpm` 需要 root，所以仍需手动安装。
+  - **Browser Use and Computer Use** 开关会在 ZCode 的 `cli/config.json` 里同时开关这两个官方插件。它们只能在桌面版里工作；只要其中一个开着，每个会话都会额外启动 node_repl 辅助进程：实测一个会话开着约 700 MB，关掉约 490 MB。改动只影响之后新开的会话，并且同时作用于本机的 ZCode 桌面版和 ZCode CLI。
+- **Diagnostics**（只读）：
+  - provider 状态，以及 agent 日志里最近一次官方请求签名检查的结果；
+  - 版本是否一致，包括 daemon 环境里残留的 `ZCODE_APP_VERSION`；
+  - 每个打开会话的进程树和内存（Linux `/proc`）；
+  - 哪些 provider 配了 key（不显示 key 本身）；
+  - 最近一小时的 agent 错误，以及日志和配置文件的路径。
+
 ## 子代理(subagent)卡片
 
 `zcode` 每次通过 `Agent`/`Task` 派发子代理时，子代理都跑在独立子会话里。桥（`zcode-acp`）会跟踪它们——父会话流上镜像出来的子会话工具事件，加上权威目录 `session/subagents`——并在每次状态变化时发出供应商通知 `_zcode/subagent`。插件的 ACP transformer（`server/subagents.ts`）把它转换成 Paseo 原生的**子代理卡片**（`ProviderToolCallDetail { type: "sub_agent" }`）：机器人图标、`<类型>: <描述>` 标题、可展开的活动日志（子代理自己的工具调用），以及用量页脚（`n tools · n tokens · n s`）。

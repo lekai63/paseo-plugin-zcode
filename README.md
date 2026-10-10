@@ -42,6 +42,20 @@ locator — `fetch` re-reads the apiKey on every call, and the daemon caches
 reports for five minutes. Session-scoped discovery resolves `ZCODE_HOME` /
 `ZCODE_PROVIDER` from the zcode session's own launch environment.
 
+## Settings screens
+
+**Settings → Plugins → ZCode (ACP)** has two screens. Their data comes from the plugin server, which runs the bridge's own `dist/` modules in a short-lived `node` child (plugin bundles cannot import the bridge's ESM modules directly).
+
+- **Runtime**: the installed ZCode Desktop version (`app.asar` package.json, as the bridge reports it) and its bundled agent CLI, the bridge version and pinned commit, and Node.js / Bun.
+  - **Check for updates** reads the official release manifest and links the packages for this platform. Installing a `.deb`/`.rpm` needs root, so it stays manual.
+  - **Browser Use and Computer Use** switches both official plugins in ZCode's `cli/config.json`. They only work inside ZCode Desktop, and while either is on, every session also starts the node_repl helper: a session measured ~700 MB with it and ~490 MB without. The switch applies to sessions opened afterwards, and to ZCode Desktop and the ZCode CLI on the same machine.
+- **Diagnostics** (read-only):
+  - provider health and the latest official request-signing check from the agent log;
+  - version consistency, including a stale `ZCODE_APP_VERSION` in the daemon environment;
+  - each open session's process tree and memory (Linux `/proc`);
+  - which providers have a key (never the key);
+  - agent errors from the last hour, and the log and config paths.
+
 ## Sub-agent cards
 
 `zcode` runs every `Agent`/`Task` dispatch as a child session. The bridge
