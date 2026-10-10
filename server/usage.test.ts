@@ -50,10 +50,10 @@ function snapshot(patch: Partial<ZcodeQuotaSnapshot>): ZcodeQuotaSnapshot {
 test("session discovery reads the session's own ZCode home and pinned provider", async () => {
   const home = zcodeHome(PROVIDERS);
   try {
-    const source = createZcodeUsageSource("zcode");
+    const source = createZcodeUsageSource("zcode-acp");
     const accounts = await source.discover({
       kind: "session",
-      provider: "zcode",
+      provider: "zcode-acp",
       env: { ZCODE_HOME: home, ZCODE_PROVIDER: "builtin:zai-coding-plan" },
     });
     assert.equal(accounts.length, 1);
@@ -74,8 +74,8 @@ test("session discovery reads the session's own ZCode home and pinned provider",
 test("without a pinned provider the first enabled one wins, with a stable key", async () => {
   const home = zcodeHome(PROVIDERS);
   try {
-    const source = createZcodeUsageSource("zcode");
-    const scope = { kind: "session" as const, provider: "zcode", env: { ZCODE_HOME: home } };
+    const source = createZcodeUsageSource("zcode-acp");
+    const scope = { kind: "session" as const, provider: "zcode-acp", env: { ZCODE_HOME: home } };
     const [first] = await source.discover(scope);
     const [second] = await source.discover(scope);
     assert.equal((first.input as { provider: string }).provider, "builtin:bigmodel-coding-plan");
@@ -88,13 +88,13 @@ test("without a pinned provider the first enabled one wins, with a stable key", 
 test("session discovery ignores other providers and logins without an apiKey", async () => {
   const home = zcodeHome({ "builtin:zai": { enabled: true, options: {} } });
   try {
-    const source = createZcodeUsageSource("zcode");
+    const source = createZcodeUsageSource("zcode-acp");
     assert.deepEqual(
       await source.discover({ kind: "session", provider: "claude", env: { ZCODE_HOME: home } }),
       [],
     );
     assert.deepEqual(
-      await source.discover({ kind: "session", provider: "zcode", env: { ZCODE_HOME: home } }),
+      await source.discover({ kind: "session", provider: "zcode-acp", env: { ZCODE_HOME: home } }),
       [],
     );
   } finally {
@@ -105,7 +105,7 @@ test("session discovery ignores other providers and logins without an apiKey", a
 test("fetch throws once the discovered login is gone", async () => {
   const home = zcodeHome(PROVIDERS);
   try {
-    const source = createZcodeUsageSource("zcode");
+    const source = createZcodeUsageSource("zcode-acp");
     await assert.rejects(
       source.fetch({ configPath: path.join(home, "v2", "config.json"), provider: "builtin:zai" }),
       /no longer exists/,

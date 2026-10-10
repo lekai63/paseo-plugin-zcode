@@ -132,7 +132,9 @@ export function toUsageReport({ snapshot, httpStatus }: QuotaReading): UsageRepo
 
 export function createZcodeUsageSource(providerId: string): UsageSourceRegistration {
   return {
-    id: "zcode",
+    // Usage-source ids are daemon-wide, not per plugin: `zcode` belongs to the
+    // Services Server provider (supermomonga/zcode-provider) on the same daemon.
+    id: "zcode-acp",
     label: "ZCode (ACP)",
     icon: "icon.svg",
     input: inputSchema,

@@ -28,7 +28,7 @@ paseo run --provider zcode-acp "修复失败的测试"
 
 ## 用量来源（usage source）
 
-server 入口注册了一个 `zcode` **usage source**，GLM Coding Plan 配额会出现在 Paseo 的 Usage 弹窗和侧边栏用量里，与内置来源并列（5h 和 weekly 为摘要窗口，MCP 显示在卡片中）。数据来自 ZCode 桌面端同款接口 `/api/monitor/usage/quota/limit`，读取 `~/.zcode/v2/config.json` 中当前启用 provider 的 apiKey（第一个 enabled 的 provider，或被 `ZCODE_PROVIDER` 指定的那个，与桥的选取规则一致；`ZCODE_HOME` 会替换 `~/.zcode`）。
+server 入口注册了一个 `zcode-acp` **usage source**（usage source 的 id 在整个 daemon 内唯一），GLM Coding Plan 配额会出现在 Paseo 的 Usage 弹窗和侧边栏用量里，与内置来源并列（5h 和 weekly 为摘要窗口，MCP 显示在卡片中）。数据来自 ZCode 桌面端同款接口 `/api/monitor/usage/quota/limit`，读取 `~/.zcode/v2/config.json` 中当前启用 provider 的 apiKey（第一个 enabled 的 provider，或被 `ZCODE_PROVIDER` 指定的那个，与桥的选取规则一致；`ZCODE_HOME` 会替换 `~/.zcode`）。
 
 账号即该 provider（`ZCode · <provider>`），账号 key 是配置路径 + provider id 的哈希，上报的 input 只包含这个存储定位符——`fetch` 每次都重新读取 apiKey，daemon 会把报告缓存五分钟。会话级发现会从该 zcode 会话自己的启动环境里解析 `ZCODE_HOME` / `ZCODE_PROVIDER`。
 

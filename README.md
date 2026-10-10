@@ -28,7 +28,7 @@ paseo run --provider zcode-acp "Fix the failing test"
 
 ## Usage source
 
-The server entry registers a `zcode` **usage source**, so GLM Coding Plan quota
+The server entry registers a `zcode-acp` **usage source** (usage-source ids are daemon-wide), so GLM Coding Plan quota
 appears in Paseo's Usage modal and sidebar usage next to the built-in sources
 (5-hour and weekly as summary windows, MCP on the card). The data comes from
 the same endpoint the ZCode desktop app uses
