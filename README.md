@@ -26,29 +26,21 @@ Then run agents as usual:
 paseo run --provider zcode "Fix the failing test"
 ```
 
-## Quota pill
-
-The client entry adds a composer pill to every `zcode` agent, next to the
-context meter. The pill label shows the GLM Coding Plan **5-hour** remaining
-percentage; opening it lists every window the quota API reports (5h, weekly,
-MCP) with used/left bars and reset countdowns. The data comes from the same
-endpoint the ZCode desktop app uses (`/api/monitor/usage/quota/limit`), reading
-the active provider's apiKey from `~/.zcode/v2/config.json` — the first enabled
-provider, or the one pinned by `ZCODE_PROVIDER`, exactly like the bridge. The
-plugin server caches snapshots for 10 s and the client polls once a minute; the
-popover's **Refresh** button bypasses the cache.
-
 ## Usage source
 
-The server entry also registers a `zcode` **usage source**, so the same GLM
-Coding Plan windows appear in Paseo's Usage modal and sidebar usage next to the
-built-in sources (5-hour and weekly as summary windows, MCP on the card). The
-account is the active ZCode provider (`ZCode · <provider>`); its key is a hash
-of the config path and provider id, and the report inputs carry only that
-store locator — `fetch` re-reads the apiKey on every call. Session-scoped
-discovery resolves `ZCODE_HOME` / `ZCODE_PROVIDER` from the zcode session's own
-launch environment. The pill and the usage source share one per-login cache, so
-they never double the upstream requests.
+The server entry registers a `zcode` **usage source**, so GLM Coding Plan quota
+appears in Paseo's Usage modal and sidebar usage next to the built-in sources
+(5-hour and weekly as summary windows, MCP on the card). The data comes from
+the same endpoint the ZCode desktop app uses
+(`/api/monitor/usage/quota/limit`), with the active provider's apiKey from
+`~/.zcode/v2/config.json` — the first enabled provider, or the one pinned by
+`ZCODE_PROVIDER`, exactly like the bridge (`ZCODE_HOME` replaces `~/.zcode`).
+
+The account is that provider (`ZCode · <provider>`); its key is a hash of the
+config path and provider id, and the report inputs carry only that store
+locator — `fetch` re-reads the apiKey on every call, and the daemon caches
+reports for five minutes. Session-scoped discovery resolves `ZCODE_HOME` /
+`ZCODE_PROVIDER` from the zcode session's own launch environment.
 
 ## Sub-agent cards
 

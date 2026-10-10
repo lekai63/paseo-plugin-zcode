@@ -10,12 +10,10 @@ import type { ProviderStatus, ProviderStatusRequest } from "@getpaseo/plugin/ser
 // sendBehavior is "steer", so mid-turn sends to ACP agents error out).
 import { runAcpProvider } from "./server/acp-adapter/acp";
 
-import { getZcodeQuota } from "./server/quota";
 import { createZcodeSubagentTransformer } from "./server/subagents";
 import { wrapWithSubsessions, zcodeSubagentHub } from "./server/subsessions";
 import { createZcodeToolCallTransformer } from "./server/tool-calls";
 import { createZcodeUsageSource } from "./server/usage";
-import { zcodeQuotaRpc } from "./shared/quota";
 
 const PROVIDER_ID = "zcode";
 
@@ -196,10 +194,7 @@ export default function contribute(server: PluginServerContext) {
       status: bridgeStatus,
     }),
   );
-  // GLM Coding Plan quota for the composer pill (optionally refreshed via the
-  // popover's Refresh button, which passes `force`), and the same windows as a
-  // usage source for Paseo's Usage modal and sidebar.
-  server.handle(zcodeQuotaRpc, getZcodeQuota);
+  // GLM Coding Plan quota windows for Paseo's Usage modal and sidebar.
   server.registerUsageSource(createZcodeUsageSource(PROVIDER_ID));
   return () => {};
 }

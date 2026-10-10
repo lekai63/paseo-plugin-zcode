@@ -2,8 +2,8 @@
  * GLM Coding Plan quota as a Paseo usage source (Paseo 0.11+).
  *
  * Paseo's host-wide Usage modal and sidebar usage list every registered
- * usage source. This one reports the same quota windows as the composer pill
- * (server/quota.ts, which also owns the shared per-login cache):
+ * usage source. This one reports the windows server/quota.ts reads from the
+ * quota API (5-hour, weekly, MCP):
  *
  *   - global discovery lists the login the plugin process sees
  *     (`ZCODE_HOME` / `ZCODE_PROVIDER`, else `~/.zcode` + first enabled
@@ -30,7 +30,6 @@ import {
 } from "@getpaseo/plugin/server/usage";
 import { z } from "zod";
 
-import type { ZcodeQuotaSnapshot } from "../shared/quota.ts";
 import {
   loadActiveProvider,
   NO_QUOTA_WINDOWS,
@@ -38,6 +37,7 @@ import {
   zcodeLoginFromEnv,
   type QuotaReading,
   type ZcodeLogin,
+  type ZcodeQuotaSnapshot,
 } from "./quota.ts";
 
 const inputSchema = z

@@ -2,13 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
-
-import { zcodeQuotaRpc, type ZcodeQuotaSnapshot } from "../shared/quota.ts";
-
 /**
- * GLM Coding Plan quota reader for the Paseo composer pill and the `zcode`
- * usage source (server/usage.ts).
+ * GLM Coding Plan quota reader for the `zcode` usage source (server/usage.ts).
  *
  * The data source is the same one the ZCode desktop app and `zcode-acp quota`
  * use: the active provider's apiKey from `~/.zcode/v2/config.json` against the
@@ -22,8 +17,6 @@ const HOST_CN = "https://open.bigmodel.cn";
 const HOST_INTL = "https://api.z.ai";
 
 const REQUEST_TIMEOUT_MS = 8_000;
-/** Serve a cached reading for this long; the pill polls once a minute. */
-const CACHE_TTL_MS = 10_000;
 
 const AUTH_FAILURE_RE = /authorization|auth|token|鉴权|授权|未登录/i;
 const RATE_LIMITED_RE = /rate\s*limit|too many requests|too frequent|frequency|限流|频率|过于频繁|稍后再试/i;
@@ -35,6 +28,25 @@ interface ZcodeProviderEntry {
 
 interface ZcodeConfig {
   provider?: Record<string, ZcodeProviderEntry>;
+}
+
+/**
+ * Normalised GLM Coding Plan quota snapshot: one entry per limit window
+ * (5-hour, weekly, MCP), with the used/remaining percentages already derived.
+ */
+export interface ZcodeQuotaSnapshot {
+  status: "ok" | "auth_error" | "rate_limited" | "unavailable";
+  level: string;
+  fetchedAt: string;
+  sourceHost: string;
+  items: Array<{
+    key: string;
+    label: string;
+    usedPercent: number;
+    leftPercent: number;
+    nextResetTime: number | null;
+  }>;
+  error: string | null;
 }
 
 export interface ActiveProvider {
@@ -208,7 +220,7 @@ interface QuotaEnvelope {
 /** `error` of an `unavailable` snapshot whose plan reports no quota windows. */
 export const NO_QUOTA_WINDOWS = "quota API returned no usable windows";
 
-async function queryQuota(login: ZcodeLogin): Promise<QuotaReading> {
+export async function readZcodeQuota(login: ZcodeLogin): Promise<QuotaReading> {
   const base: ZcodeQuotaSnapshot = {
     status: "unavailable",
     level: "",
@@ -295,32 +307,4 @@ async function queryQuota(login: ZcodeLogin): Promise<QuotaReading> {
     sourceHost: host,
     items,
   });
-}
-
-// Per login, so the pill and the usage source share one upstream request.
-const cache = new Map<string, { at: number; reading: QuotaReading }>();
-const inFlight = new Map<string, Promise<QuotaReading>>();
-
-export async function readZcodeQuota(login: ZcodeLogin, force = false): Promise<QuotaReading> {
-  const key = `${login.configPath}\0${login.provider ?? ""}`;
-  const cached = cache.get(key);
-  if (!force && cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.reading;
-  const pending = inFlight.get(key);
-  if (pending) return pending;
-  const next = queryQuota(login)
-    .then((reading) => {
-      cache.set(key, { at: Date.now(), reading });
-      return reading;
-    })
-    .finally(() => {
-      inFlight.delete(key);
-    });
-  inFlight.set(key, next);
-  return next;
-}
-
-export async function getZcodeQuota(
-  input: RpcInput<typeof zcodeQuotaRpc>,
-): Promise<RpcOutput<typeof zcodeQuotaRpc>> {
-  return (await readZcodeQuota(zcodeLoginFromEnv(process.env), input.force)).snapshot;
 }

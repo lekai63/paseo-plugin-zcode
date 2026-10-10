@@ -13,8 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import type { ZcodeQuotaSnapshot } from "../shared/quota.ts";
-import { NO_QUOTA_WINDOWS } from "./quota.ts";
+import { NO_QUOTA_WINDOWS, type ZcodeQuotaSnapshot } from "./quota.ts";
 import { createZcodeUsageSource, toUsageReport } from "./usage.ts";
 
 function zcodeHome(providers: Record<string, unknown>): string {
