@@ -9,7 +9,7 @@
 - **Paseo >= 0.8.0**（provider 插件 API 是 0.8 新增，0.7.x 没有）
 - daemon 开启插件：`~/.paseo/config.json` 根级 `"pluginsEnabled": true`，然后 `paseo reload`
 
-桥会自动安装：`paseo plugin add` / `update` 时，manifest 的 `build` 会在托管检出目录里执行 `npm ci --omit=dev`，按仓库锁文件拉取 `zcode-acp-server`。全局安装（`npm i -g zcode-acp-server`）变为可选——插件优先使用检出内副本，其次回退到常见全局根目录。
+桥会自动安装：`paseo plugin add` / `update` 时，manifest 的 `build` 会在托管检出目录里执行 `npm ci --omit=dev`，按仓库锁文件拉取 `zcode-acp-server`。全局安装（`npm i -g zcode-acp-server`）变为可选——插件优先使用检出内副本（位于 `checkout/node_modules/` 下），其次回退到常见全局根目录。
 
 ## 安装
 
@@ -32,7 +32,7 @@ npm i -g zcode-acp-server@latest   # 插件自动使用新版本
 
 ## 桥的解析机制
 
-Paseo 以注入 `require`、无 `__dirname`/`import.meta` 的方式执行插件 bundle，且 daemon 可能由 node CLI 安装或桌面 app（Electron）托管。本插件因此改为扫描常见 npm 全局根目录（fnm、nvm、`/usr/local`、Homebrew），并配对各根目录自带的 `node` 二进制；worker 脚本锚点（`createRequire(process.argv[1])`）作为首选尝试。全程不依赖 `PATH`，无论 daemon 由谁拉起都能工作，桥也永远不会经由 Electron 二进制启动。
+Paseo 以注入 `require`、无 `__dirname`/`import.meta` 的方式执行插件 bundle，且 daemon 可能由 node CLI 安装或桌面 app（Electron）托管。本插件因此改为扫描常见 npm 全局根目录（fnm、nvm、mise、`/usr/local`、Homebrew），并配对各根目录自带的 `node` 二进制；worker 脚本锚点（`createRequire(process.argv[1])`）作为首选尝试。检出内副本没有归属的全局根目录，因此会配对任意一个已安装的 `node` 二进制。全程不依赖 `PATH`，无论 daemon 由谁拉起都能工作，桥也永远不会经由 Electron 二进制启动。
 
 ## 已知限制
 

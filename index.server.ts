@@ -18,6 +18,22 @@ const RELATIVE_ENTRY = path.join("zcode-acp-server", "dist", "cli.js");
 interface GlobalInstall {
   nodeBin: string;
   globalRoot: string;
+  major: number;
+}
+
+function versionMajor(dir: string): number {
+  const m = /^v?(\d+)/.exec(dir);
+  return m ? Number(m[1]) : 0;
+}
+
+function compareVersionDirs(a: string, b: string): number {
+  const ka = a.replace(/^v/, "").split(".").map(Number);
+  const kb = b.replace(/^v/, "").split(".").map(Number);
+  for (let i = 0; i < Math.max(ka.length, kb.length); i++) {
+    const d = (ka[i] ?? 0) - (kb[i] ?? 0);
+    if (d) return d;
+  }
+  return 0;
 }
 
 function globalInstalls(): GlobalInstall[] {
@@ -34,13 +50,20 @@ function globalInstalls(): GlobalInstall[] {
       binSub: "bin",
       libSub: path.join("lib", "node_modules"),
     },
+    {
+      versions: path.join(home, ".local", "share", "mise", "installs", "node"),
+      binSub: "bin",
+      libSub: path.join("lib", "node_modules"),
+    },
   ];
   for (const { versions, binSub, libSub } of scans) {
     try {
-      for (const version of fs.readdirSync(versions)) {
+      const dirs = fs.readdirSync(versions).sort((a, b) => compareVersionDirs(b, a));
+      for (const version of dirs) {
         versionDirs.push({
           nodeBin: path.join(versions, version, binSub, "node"),
           globalRoot: path.join(versions, version, libSub),
+          major: versionMajor(version),
         });
       }
     } catch {
@@ -48,8 +71,8 @@ function globalInstalls(): GlobalInstall[] {
     }
   }
   versionDirs.push(
-    { nodeBin: "/usr/local/bin/node", globalRoot: "/usr/local/lib/node_modules" },
-    { nodeBin: "/opt/homebrew/bin/node", globalRoot: "/opt/homebrew/lib/node_modules" },
+    { nodeBin: "/usr/local/bin/node", globalRoot: "/usr/local/lib/node_modules", major: 0 },
+    { nodeBin: "/opt/homebrew/bin/node", globalRoot: "/opt/homebrew/lib/node_modules", major: 0 },
   );
   return versionDirs;
 }
@@ -57,6 +80,13 @@ function globalInstalls(): GlobalInstall[] {
 function nodeForCli(cli: string): string {
   for (const install of globalInstalls()) {
     if (cli.startsWith(install.globalRoot + path.sep)) return install.nodeBin;
+  }
+  // Checkout-local copies have no owning global root. Pair them with the
+  // newest installed node >= 18 (the bridge needs post-18 APIs such as
+  // Writable.toWeb) instead of process.execPath, which is the Electron
+  // binary when the daemon is app-hosted and breaks the ACP handshake.
+  for (const install of globalInstalls()) {
+    if (install.major >= 18 && fs.existsSync(install.nodeBin)) return install.nodeBin;
   }
   return process.execPath;
 }

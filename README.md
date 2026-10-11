@@ -9,7 +9,7 @@ A [Paseo](https://paseo.sh) provider plugin that registers **ZCode** (Z.ai's cod
 - **Paseo >= 0.8.0** (the provider plugin API does not exist in 0.7.x)
 - Plugins enabled on the daemon: root-level `"pluginsEnabled": true` in `~/.paseo/config.json`, then `paseo reload`
 
-The bridge installs itself: on `paseo plugin add` / `update`, the manifest `build` runs `npm ci --omit=dev` inside the managed checkout, which pulls `zcode-acp-server` from the committed lockfile. A global install (`npm i -g zcode-acp-server`) is optional — the plugin prefers the checkout-local copy and falls back to well-known global roots.
+The bridge installs itself: on `paseo plugin add` / `update`, the manifest `build` runs `npm ci --omit=dev` inside the managed checkout, which pulls `zcode-acp-server` from the committed lockfile. A global install (`npm i -g zcode-acp-server`) is optional — the plugin prefers the checkout-local copy (under `checkout/node_modules/`) and falls back to well-known global roots.
 
 ## Install
 
@@ -32,7 +32,7 @@ npm i -g zcode-acp-server@latest   # the plugin picks it up as-is
 
 ## How the bridge is resolved
 
-Paseo evaluates plugin bundles with an injected `require` and no `__dirname`/`import.meta`, and the daemon can be hosted either by a node CLI install or by the desktop app (Electron). The plugin therefore locates the bridge by scanning the well-known npm global roots — fnm, nvm, `/usr/local`, Homebrew — pairing each root with its own `node` binary, with the worker-script anchor (`createRequire(process.argv[1])`) tried first. Nothing depends on `PATH`, so the provider works no matter how the daemon was started, and the bridge never launches through an Electron binary.
+Paseo evaluates plugin bundles with an injected `require` and no `__dirname`/`import.meta`, and the daemon can be hosted either by a node CLI install or by the desktop app (Electron). The plugin therefore locates the bridge by scanning the well-known npm global roots — fnm, nvm, mise, `/usr/local`, Homebrew — pairing each root with its own `node` binary, with the worker-script anchor (`createRequire(process.argv[1])`) tried first. A checkout-local bridge has no owning global root, so it is paired with whichever installed `node` binary is found first. Nothing depends on `PATH`, so the provider works no matter how the daemon was started, and the bridge never launches through an Electron binary.
 
 ## Notes & limitations
 
