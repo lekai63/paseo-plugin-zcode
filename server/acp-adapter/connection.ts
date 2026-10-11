@@ -11,7 +11,12 @@
  *     cancelled;
  *   - `clearPendingPermissions` cancels outstanding permission requests
  *     before steering (the daemon asks for this so a parked popup cannot
- *     strand the steer).
+ *     strand the steer);
+ *   - native guide-steer: when the bridge advertises
+ *     `agentCapabilities._meta.zcode.guide`, a steer is first handed to the
+ *     running turn through `_zcode/guide` (ZCode's own "guide" follow-up — the
+ *     model reads the message at its next step, no preempt); the preempting
+ *     second session/prompt above is the fallback when the bridge declines.
  *
  * The stock adapter refuses steer prompts outright (never advertises the
  * capability); everything else matches upstream except import paths. Re-sync
@@ -77,6 +82,12 @@ const ADAPTER_CAPABILITIES = [
   "session.configure",
   "permission",
 ] as const;
+
+/**
+ * Local change vs upstream: bound on `_zcode/guide`. The bridge answers once
+ * ZCode acknowledged the input (milliseconds); its own backend timeout is 15s.
+ */
+const GUIDE_TIMEOUT_MS = 20_000;
 
 interface AcpBoundarySession {
   runtime: AcpRuntime;
@@ -607,6 +618,22 @@ class AcpRuntime {
         return;
       }
       if (input.prompt.clearPendingPermissions) this.cancelPendingPermissions();
+      if (await this.guide(input.prompt)) {
+        // The bridge keeps the running prompt open until the model consumed
+        // the guide, so the turn normally outlives this call. A cancel can
+        // still win the race: then report the steer as not taken and let the
+        // daemon's steer-admission fallback send it as a fresh turn.
+        this.emit({
+          type: "session.prompt_result",
+          sessionId: this.options.boundarySessionId,
+          clientMessageId: input.prompt.clientMessageId,
+          result:
+            this.activePrompt === active
+              ? { type: "steer", turnId: active.turnId }
+              : { type: "completed" },
+        });
+        return;
+      }
       // The bridge (zcode-acp-server) preempts the superseded backend turn
       // when this prompt lands mid-flight, so no explicit cancel is sent
       // first — the generation guard in beginPrompt silences the superseded
@@ -707,6 +734,34 @@ class AcpRuntime {
       state,
       ...(error ? { error } : {}),
     });
+  }
+
+  /**
+   * Local change vs upstream: native guide-steer. Hands a text steer to the
+   * running turn through the bridge's `_zcode/guide`; false when the bridge
+   * lacks it or declines (attachments, slash commands, no live backend turn),
+   * and the caller falls back to the preempting steer.
+   */
+  private async guide(
+    prompt: Extract<ProviderInput, { type: "session.prompt" }>["prompt"],
+  ): Promise<boolean> {
+    const meta = this.agentCapabilities._meta as { zcode?: { guide?: unknown } } | null | undefined;
+    if (meta?.zcode?.guide !== true) return false;
+    try {
+      const response = await withTimeout(
+        this.call(
+          this.connection.request<{ outcome?: string }>("_zcode/guide", {
+            sessionId: this.nativeSessionId,
+            prompt: toAcpPrompt(prompt),
+          }),
+        ),
+        GUIDE_TIMEOUT_MS,
+        "ACP guide timed out",
+      );
+      return response?.outcome === "guided";
+    } catch {
+      return false;
+    }
   }
 
   /** Local change vs upstream: deny outstanding permissions before a steer. */

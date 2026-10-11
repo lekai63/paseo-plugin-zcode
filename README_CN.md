@@ -66,9 +66,9 @@ server 入口注册了一个 `zcode-acp` **usage source**（usage source 的 id 
 
 `server/acp-adapter/` 是 paseo v0.11.2 `runAcpProvider` 适配层（`packages/plugin/src/server/acp.ts` + `acp-internal/connection.ts`，Apache-2.0）的本地拷贝，附带官方 shim 缺失的一项能力：**`prompt.steer`**。paseo 默认发送行为就是 `steer`，而官方 ACP 适配层从不声明该能力，导致对 ACP 后端 agent 的运行中插话直接报 "Provider does not support prompt.steer"。
 
-fork 的行为是"转向"而非拒绝：`delivery: "steer"` 的 prompt 复用运行中 turn 的身份，立即发出新的 `session/prompt`（zcode-acp 桥会抢占式停掉被取代的后端 turn），返回 `prompt_result { type: "steer" }`；代数计数器会吞掉被取代请求的终止事件，turn 不会显示为已取消。`clearPendingPermissions` 会在转向前取消挂起的权限弹窗。这是基于抢占的 steer——模型带着完整历史重跑，不是生成中注入（app-server 0.16+ 已无注入 API）。
+fork 的行为是"转向"而非拒绝：`delivery: "steer"` 的 prompt 复用运行中 turn 的身份，返回 `prompt_result { type: "steer" }`；`clearPendingPermissions` 会先取消挂起的权限弹窗。桥声明了原生引导（`agentCapabilities._meta.zcode.guide`）时走原生路径：文本经 `_zcode/guide` 交给正在运行的 ZCode turn 作为引导（guide，即 ZCode 自己的跟进模式），模型在下一个步骤边界（当前工具批次结束后，或一段文本输出之后）读到它，turn 不会被停掉；桥会让运行中的 `session/prompt` 一直保持到这条引导消息得到回复。桥拒绝时（图片等非文本内容、斜杠命令、没有活动的后端 turn）回退为抢占：作为新的 `session/prompt` 发出（桥停掉被取代的后端 turn），代数计数器吞掉被取代请求的终止事件，turn 不会显示为已取消。
 
-除 import 路径与一处构造器参数属性展开（Node type-stripping 只支持可擦除语法）外，其余与上游一致。升级 `@getpaseo/plugin` 时，请 diff 对应 tag 的两个源文件与本地拷贝，按 `Local change vs upstream` 标记重新套用。`server/acp-adapter.test.ts` 用一个模拟抢占的假 agent 覆盖了 steer 契约。
+除 import 路径与一处构造器参数属性展开（Node type-stripping 只支持可擦除语法）外，其余与上游一致。升级 `@getpaseo/plugin` 时，请 diff 对应 tag 的两个源文件与本地拷贝，按 `Local change vs upstream` 标记重新套用。`server/acp-adapter.test.ts` 用假 agent 覆盖了两条 steer 路径（引导与抢占回退）。
 
 ## 桥的解析机制
 

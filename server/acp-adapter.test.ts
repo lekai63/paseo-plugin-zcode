@@ -31,7 +31,13 @@ import { runAcpProvider } from "./acp-adapter/acp.ts";
  *   - "ASK"     → send a session/request_permission server request, keep the
  *                 prompt pending; when the permission response arrives, echo
  *                 its outcome as a `_test/permissionOutcome` notification
- * Anything else → generic empty result.
+ * Anything else → generic empty result. Every session/prompt is echoed as a
+ * `_test/prompt` notification.
+ *
+ * With FAKE_GUIDE=1 in the session env the agent also advertises
+ * `_meta.zcode.guide` and answers `_zcode/guide` like the bridge: "STEER" is
+ * declined (the adapter must fall back to the preempting steer), anything
+ * else is guided — it streams "guided reply" and ends the pending prompt.
  */
 const FAKE_AGENT = `
 const readline = require("node:readline");
@@ -43,13 +49,29 @@ lines.on("line", (line) => {
   let message;
   try { message = JSON.parse(line); } catch { return; }
   if (message.method === "initialize") {
-    send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: message.params.protocolVersion, agentCapabilities: {} } });
+    const agentCapabilities = process.env.FAKE_GUIDE === "1" ? { _meta: { zcode: { guide: true } } } : {};
+    send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: message.params.protocolVersion, agentCapabilities } });
+  } else if (message.method === "_zcode/guide") {
+    const text = (message.params.prompt || []).map((block) => block.text || "").join("");
+    send({ jsonrpc: "2.0", method: "_test/guide", params: { text, sessionId: message.params.sessionId } });
+    if (text === "STEER") {
+      send({ jsonrpc: "2.0", id: message.id, result: { outcome: "unavailable", reason: "declined" } });
+    } else {
+      send({ jsonrpc: "2.0", id: message.id, result: { outcome: "guided", inputId: "g1", delivery: "queue" } });
+      setTimeout(() => {
+        send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "native-1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "guided reply" } } } });
+        for (const id of pendingPrompts.splice(0)) {
+          send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+        }
+      }, 15);
+    }
   } else if (message.method === "session/new") {
     send({ jsonrpc: "2.0", method: "_test/env", params: { launch: process.env.FAKE_LAUNCH_MARK ?? null, session: process.env.FAKE_SESSION_MARK ?? null } });
     send({ jsonrpc: "2.0", id: message.id, result: { sessionId: "native-1", modes: null, configOptions: [] } });
   } else if (message.method === "session/prompt") {
     pendingPrompts.push(message.id);
     const text = (message.params.prompt || []).map((block) => block.text || "").join("");
+    send({ jsonrpc: "2.0", method: "_test/prompt", params: { text } });
     if (text === "STEER") {
       for (const earlier of pendingPrompts.splice(0, pendingPrompts.length - 1)) {
         send({ jsonrpc: "2.0", id: earlier, result: { stopReason: "cancelled" } });
@@ -357,6 +379,109 @@ test("clearPendingPermissions denies outstanding permissions before steering", a
     );
     assert.ok(outcome, "agent echoed the permission outcome");
     assert.deepEqual(outcome.params, { outcome: { outcome: "cancelled" } });
+  } finally {
+    await harness.close();
+  }
+});
+
+test("native guide hands the steer to the running request", async () => {
+  const harness = await connectFakeAgent({ sessionEnv: { FAKE_GUIDE: "1" } });
+  try {
+    await harness.send(textPrompt("m1", "HOLD"));
+    const turnResult = await harness.waitFor(
+      (event) => event.type === "session.prompt_result" && event.result.type === "turn",
+      "first prompt turn result",
+    );
+    const turnId =
+      turnResult.type === "session.prompt_result" && turnResult.result.type === "turn"
+        ? turnResult.result.turnId
+        : "";
+    await harness.send(textPrompt("m2", "also do X", "steer"));
+    const steerResult = await harness.waitFor(
+      (event) => event.type === "session.prompt_result" && event.result.type === "steer",
+      "steer result",
+    );
+    if (steerResult.type === "session.prompt_result" && steerResult.result.type === "steer") {
+      assert.equal(steerResult.result.turnId, turnId);
+    }
+    await harness.waitFor(
+      (event) => event.type === "session.turn" && event.state === "completed",
+      "turn completed",
+    );
+    const turnStates = harness.events
+      .filter(
+        (event): event is Extract<ProviderEvent, { type: "session.turn" }> =>
+          event.type === "session.turn" && event.turnId === turnId,
+      )
+      .map((event) => event.state);
+    assert.deepEqual(turnStates, ["started", "completed"]);
+    assert.ok(
+      harness.events.some(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "assistant_message" &&
+          event.item.text === "guided reply",
+      ),
+      "guided reply reached the timeline",
+    );
+    const guides = harness.vendorNotifications.filter((entry) => entry.method === "_test/guide");
+    assert.deepEqual(guides.map((entry) => entry.params), [
+      { text: "also do X", sessionId: "native-1" },
+    ]);
+    // No second session/prompt: the guide rode on the running request.
+    const prompts = harness.vendorNotifications.filter((entry) => entry.method === "_test/prompt");
+    assert.deepEqual(prompts.map((entry) => entry.params), [{ text: "HOLD" }]);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a declined guide falls back to the preempting steer", async () => {
+  const harness = await connectFakeAgent({ sessionEnv: { FAKE_GUIDE: "1" } });
+  try {
+    await harness.send(textPrompt("m1", "HOLD"));
+    await harness.waitFor(
+      (event) => event.type === "session.turn" && event.state === "started",
+      "turn started",
+    );
+    await harness.send(textPrompt("m2", "STEER", "steer"));
+    await harness.waitFor(
+      (event) => event.type === "session.turn" && event.state === "completed",
+      "turn completed",
+    );
+    assert.ok(
+      harness.events.some(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "assistant_message" &&
+          event.item.text === "steered reply",
+      ),
+      "steered reply reached the timeline",
+    );
+    const prompts = harness.vendorNotifications.filter((entry) => entry.method === "_test/prompt");
+    assert.deepEqual(prompts.map((entry) => entry.params), [{ text: "HOLD" }, { text: "STEER" }]);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a bridge without native guide never receives _zcode/guide", async () => {
+  const harness = await connectFakeAgent();
+  try {
+    await harness.send(textPrompt("m1", "HOLD"));
+    await harness.waitFor(
+      (event) => event.type === "session.turn" && event.state === "started",
+      "turn started",
+    );
+    await harness.send(textPrompt("m2", "STEER", "steer"));
+    await harness.waitFor(
+      (event) => event.type === "session.turn" && event.state === "completed",
+      "turn completed",
+    );
+    assert.equal(
+      harness.vendorNotifications.filter((entry) => entry.method === "_test/guide").length,
+      0,
+    );
   } finally {
     await harness.close();
   }
