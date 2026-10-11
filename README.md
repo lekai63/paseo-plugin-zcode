@@ -44,7 +44,7 @@ reports for five minutes. Session-scoped discovery resolves `ZCODE_HOME` /
 
 ## Settings screens
 
-**Settings → Plugins → ZCode (ACP)** has two screens. Their data comes from the plugin server, which runs the bridge's own `dist/` modules in a short-lived `node` child (plugin bundles cannot import the bridge's ESM modules directly).
+**Settings → Plugins → ZCode (ACP)** has three screens. Their data comes from the plugin server, which runs the bridge's own `dist/` modules in a short-lived `node` child (plugin bundles cannot import the bridge's ESM modules directly).
 
 - **Runtime**: the installed ZCode Desktop version (`app.asar` package.json, as the bridge reports it) and its bundled agent CLI, the bridge version and pinned commit, and Node.js / Bun.
   - **Check for updates** reads the official release manifest and links the packages for this platform. Installing a `.deb`/`.rpm` needs root, so it stays manual.
@@ -55,6 +55,12 @@ reports for five minutes. Session-scoped discovery resolves `ZCODE_HOME` /
   - each open session's process tree and memory (Linux `/proc`);
   - which providers have a key (never the key);
   - agent errors from the last hour, and the log and config paths.
+
+- **Account**:
+  - **Sign-in and plans:** whether ZCode's credential store on this machine is readable and signed in, and ZCode Desktop's verdict for each plan (Coding Plan, Start Plan). Signing in itself happens in ZCode Desktop.
+  - **Reset cards:** for an available Coding Plan, the 5-hour and weekly reset cards left, with their nearest expiry and last use, next to the current window usage. Using a card takes two taps. The server requires the nonce from the latest status read, allows one spend per plan at a time, and derives the idempotency key from that nonce, so a retried tap never spends a second card.
+  - **Model providers:** the built-in providers (read-only, managed by ZCode Desktop), and personal providers you can enable or disable, re-key or delete. **Add a provider** creates one from ZCode's bundled templates (Z.ai, BigModel, Kimi, MiniMax, DeepSeek, Alibaba Cloud, OpenAI, Anthropic, xAI, OpenRouter, OpenCode, …) the way ZCode Desktop does. The rule references the template, so the endpoint and model list stay ZCode's own, and the key keeps the template's access type (a Coding Plan template stays a Coding Plan provider).
+  - Providers are stored in `~/.zcode/v2/provider_config.json`, shared with ZCode Desktop. The provider's catalog key tracks that file, so the model picker updates within a few seconds. Keys are only ever sent to the server, never returned.
 
 ## Sub-agent cards
 

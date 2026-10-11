@@ -16,17 +16,14 @@
  * state out of the plugin process.
  */
 
-import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import type { ZcodeDiagnostics, ZcodeRuntimeInfo, ZcodeUpdateCheck } from "../shared/settings.ts";
+import { run, runBridgeScript, type Bridge, type Env } from "./bridge-script.ts";
 import { resolveBridge } from "./launch.ts";
 import { zcodeLoginFromEnv } from "./quota.ts";
-
-type Env = Readonly<Record<string, string | undefined>>;
-type Bridge = NonNullable<ReturnType<typeof resolveBridge>>;
 
 /**
  * Official plugins that only work inside ZCode Desktop (they drive its
@@ -45,53 +42,6 @@ const LOG_TAIL_BYTES = 4 * 1024 * 1024;
 /** `<ZCODE_HOME>` (else `~/.zcode`), derived the same way as the usage source. */
 export function zcodeHome(env: Env = process.env): string {
   return path.dirname(path.dirname(zcodeLoginFromEnv(env).configPath));
-}
-
-function run(
-  file: string,
-  args: readonly string[],
-  env: Env = process.env,
-  timeoutMs = 30_000,
-): Promise<string> {
-  const childEnv: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) if (value !== undefined) childEnv[key] = value;
-  return new Promise((resolve, reject) => {
-    execFile(
-      file,
-      [...args],
-      { env: childEnv, cwd: os.tmpdir(), timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
-      (error, stdout) => (error ? reject(error) : resolve(String(stdout))),
-    );
-  });
-}
-
-/**
- * Run `body` as an ES module in a `node` child next to the bridge's `dist/`.
- * `load(rel)` imports a bridge module; `ARGS` is the JSON passed in `args` (no
- * value is ever spliced into the source). The body's return value is the
- * last stdout line, so bridge logging on stderr never corrupts it.
- */
-async function runBridgeScript<T>(
-  bridge: Bridge,
-  body: string,
-  args: unknown = null,
-  env: Env = process.env,
-): Promise<T> {
-  const script = [
-    'import { pathToFileURL } from "node:url";',
-    'const load = (rel) => import(pathToFileURL(process.env.ZCODE_ACP_DIST + "/" + rel).href);',
-    "const ARGS = JSON.parse(process.env.ZCODE_ACP_ARGS);",
-    `const result = await (async () => { ${body} })();`,
-    'process.stdout.write("\\n" + JSON.stringify(result) + "\\n");',
-  ].join("\n");
-  const stdout = await run(
-    bridge.nodeBin,
-    ["--input-type=module", "-e", script],
-    { ...env, ZCODE_ACP_DIST: bridge.distDir, ZCODE_ACP_ARGS: JSON.stringify(args) },
-    90_000,
-  );
-  const line = stdout.trimEnd().split("\n").at(-1) ?? "null";
-  return JSON.parse(line) as T;
 }
 
 // ---------- runtime ----------
@@ -566,4 +516,34 @@ export async function collectDiagnostics(env: Env = process.env): Promise<ZcodeD
       ...(runtime.agent.path ? [{ label: "Agent CLI", path: runtime.agent.path }] : []),
     ],
   };
+}
+
+// ---------- provider catalog key ----------
+
+/**
+ * The provider's catalog cache key: the daemon re-runs model discovery when it
+ * changes, and shares one discovery across working directories while it does
+ * not. The model list comes from ZCode's own provider stores, so the key
+ * tracks those files (size + mtime) and the environment that selects them;
+ * an Account-screen edit, a ZCode Desktop change or a hand edit all refresh
+ * the model picker.
+ */
+export function catalogCacheKey(env: Env = process.env, cli: string | null = resolveBridge()?.cli ?? null): string {
+  const home = zcodeHome(env);
+  const stamp = (file: string): string => {
+    try {
+      const stat = fs.statSync(file);
+      return `${stat.size}:${stat.mtimeMs}`;
+    } catch {
+      return "-";
+    }
+  };
+  return JSON.stringify({
+    cli,
+    home,
+    pinnedProvider: env.ZCODE_PROVIDER?.trim() || null,
+    files: ["config.json", "provider_config.json", "coding-plan-cache.json"].map((name) =>
+      stamp(path.join(home, "v2", name)),
+    ),
+  });
 }

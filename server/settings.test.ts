@@ -157,3 +157,38 @@ test("zcodeHome: ZCODE_HOME replaces ~/.zcode", () => {
   assert.equal(zcodeHome({ ZCODE_HOME: "/data/zc" }), "/data/zc");
   assert.equal(zcodeHome({ HOME: "/home/u" }), path.join("/home/u", ".zcode"));
 });
+
+test("catalogCacheKey: changes when a provider store changes, not otherwise", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const { catalogCacheKey } = await import("./settings.ts");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "catalog-key-"));
+  fs.mkdirSync(path.join(home, "v2"));
+  const env = { ZCODE_HOME: home };
+  const before = catalogCacheKey(env, "/cli.js");
+  assert.equal(catalogCacheKey(env, "/cli.js"), before);
+  fs.writeFileSync(path.join(home, "v2", "provider_config.json"), "{}");
+  const after = catalogCacheKey(env, "/cli.js");
+  assert.notEqual(after, before);
+  assert.notEqual(catalogCacheKey({ ...env, ZCODE_PROVIDER: "x" }, "/cli.js"), after);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("childErrorMessage: the thrown message, not the wrapped command and stack", async () => {
+  const { childErrorMessage } = await import("./bridge-script.ts");
+  const stderr = [
+    "file:///x/provider-config.js:12",
+    "        throw new Error(`provider a is account-managed`);",
+    "              ^",
+    "",
+    "Error: provider account:x is account-managed — its models come from the coding plan, not this file",
+    "    at assertNotAccountProvider (file:///x/provider-config.js:12:15)",
+    "Node.js v24.21.0",
+  ].join("\n");
+  assert.equal(
+    childErrorMessage(stderr, new Error("Command failed: node -e …")),
+    "provider account:x is account-managed — its models come from the coding plan, not this file",
+  );
+  assert.equal(childErrorMessage("", Object.assign(new Error("x"), { killed: true })), "The bridge did not answer in time.");
+  assert.equal(childErrorMessage("", new Error("spawn ENOENT\nmore")), "spawn ENOENT");
+});

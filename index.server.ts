@@ -5,8 +5,17 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 // sendBehavior is "steer", so mid-turn sends to ACP agents error out).
 import { runAcpProvider } from "./server/acp-adapter/acp";
 
+import {
+  collectAccountView,
+  createProvider,
+  deleteProvider,
+  readResetCards,
+  updateProvider,
+  useResetCard,
+} from "./server/account";
 import { bridgeStatus, resolveLaunch } from "./server/launch";
 import {
+  catalogCacheKey,
   checkDesktopUpdate,
   collectDiagnostics,
   collectRuntimeInfo,
@@ -16,6 +25,14 @@ import { createZcodeSubagentTransformer } from "./server/subagents";
 import { wrapWithSubsessions, zcodeSubagentHub } from "./server/subsessions";
 import { createZcodeToolCallTransformer } from "./server/tool-calls";
 import { createZcodeUsageSource } from "./server/usage";
+import {
+  zcodeAccountViewRpc,
+  zcodeCreateProviderRpc,
+  zcodeDeleteProviderRpc,
+  zcodeResetCardsRpc,
+  zcodeUpdateProviderRpc,
+  zcodeUseResetCardRpc,
+} from "./shared/account";
 import {
   zcodeDiagnosticsRpc,
   zcodeRuntimeInfoRpc,
@@ -56,14 +73,23 @@ export default function contribute(server: PluginServerContext) {
         ],
       }),
       status: bridgeStatus,
+      // Re-discover models when ZCode's provider stores change (see catalogCacheKey).
+      getCatalogCacheKey: async () => catalogCacheKey(),
     }),
   );
   // GLM Coding Plan quota windows for Paseo's Usage modal and sidebar.
   server.registerUsageSource(createZcodeUsageSource(PROVIDER_ID));
-  // Settings → Plugins → ZCode (ACP): Runtime and Diagnostics screens.
+  // Settings → Plugins → ZCode (ACP): Runtime, Diagnostics and Account screens.
   server.handle(zcodeRuntimeInfoRpc, () => collectRuntimeInfo());
   server.handle(zcodeUpdateCheckRpc, () => checkDesktopUpdate());
   server.handle(zcodeSetDesktopOnlyPluginsRpc, ({ enabled }) => setDesktopOnlyPlugins(enabled));
   server.handle(zcodeDiagnosticsRpc, () => collectDiagnostics());
+  // Account: sign-in and plans, Coding Plan reset cards, model providers.
+  server.handle(zcodeAccountViewRpc, () => collectAccountView());
+  server.handle(zcodeResetCardsRpc, ({ providerId }) => readResetCards(providerId));
+  server.handle(zcodeUseResetCardRpc, (input) => useResetCard(input));
+  server.handle(zcodeCreateProviderRpc, (input) => createProvider(input));
+  server.handle(zcodeUpdateProviderRpc, (input) => updateProvider(input));
+  server.handle(zcodeDeleteProviderRpc, ({ providerId }) => deleteProvider(providerId));
   return () => {};
 }

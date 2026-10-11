@@ -34,7 +34,7 @@ server 入口注册了一个 `zcode-acp` **usage source**（usage source 的 id 
 
 ## 设置页面
 
-**设置 → 插件 → ZCode (ACP)** 下有两个页面。数据由插件服务端提供：它在一个短生命周期的 `node` 子进程里调用桥自带的 `dist/` 模块（插件 bundle 无法直接 import 桥的 ESM 模块）。
+**设置 → 插件 → ZCode (ACP)** 下有三个页面。数据由插件服务端提供：它在一个短生命周期的 `node` 子进程里调用桥自带的 `dist/` 模块（插件 bundle 无法直接 import 桥的 ESM 模块）。
 
 - **Runtime**：已安装的 ZCode 桌面版版本（读取 `app.asar` 里的 package.json，和桥报告的一致）及其自带的 agent CLI、桥的版本和锁定的 commit、Node.js / Bun。
   - **Check for updates** 读取官方发布清单，并给出本平台安装包的下载链接。安装 `.deb`/`.rpm` 需要 root，所以仍需手动安装。
@@ -45,6 +45,12 @@ server 入口注册了一个 `zcode-acp` **usage source**（usage source 的 id 
   - 每个打开会话的进程树和内存（Linux `/proc`）；
   - 哪些 provider 配了 key（不显示 key 本身）；
   - 最近一小时的 agent 错误，以及日志和配置文件的路径。
+
+- **Account**：
+  - **登录与套餐**：本机 ZCode 凭据库能否读取、是否已登录，以及 ZCode 桌面版对各套餐（Coding Plan、Start Plan）的判定。登录本身仍需在 ZCode 桌面版里完成。
+  - **重置卡**：对可用的 Coding Plan，显示 5 小时和每周重置卡的剩余数量、最近的过期时间和上次使用时间，并附上当前窗口的用量。使用一张卡需要点两次。服务端要求提交最近一次状态读取时签发的 nonce，同一套餐同一时间只允许一次使用，幂等键也由该 nonce 派生，所以重试同一次点击不会多耗一张卡。
+  - **模型 provider**：内置 provider 只读，由 ZCode 桌面版管理；个人 provider 可以启用或停用、替换 key、删除。**Add a provider** 会按 ZCode 桌面版的方式，从 ZCode 自带的模板（Z.ai、BigModel、Kimi、MiniMax、DeepSeek、阿里云百炼、OpenAI、Anthropic、xAI、OpenRouter、OpenCode 等）新建 provider：规则只引用模板，接入地址和模型列表仍以 ZCode 自己的为准；key 沿用模板的 access 类型，所以 Coding Plan 模板加出来的仍是 Coding Plan provider。
+  - provider 保存在 `~/.zcode/v2/provider_config.json`，与 ZCode 桌面版共用。provider 的 catalog key 会跟踪这个文件，所以模型选择器会在几秒内更新。key 只会发往服务端，不会再返回给前端。
 
 ## 子代理(subagent)卡片
 
