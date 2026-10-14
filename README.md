@@ -82,7 +82,7 @@ understand the vendor method ignore it, so Zed/Martty behaviour is unchanged.
 
 The bridge is pinned to a commit of `lekai63/zcode-acp` (see `package-lock.json`). To upgrade, sync upstream on the fork's `paseo` branch, make the changes there, then update this repo's dependency ref and lockfile.
 
-## Vendored ACP adapter (steer support, resume fix)
+## Vendored ACP adapter (steer support, resume fix, history release)
 
 `server/acp-adapter/` is a vendored copy of paseo v0.11.2's `runAcpProvider` adapter (`packages/plugin/src/server/acp.ts` + `acp-internal/connection.ts`, Apache-2.0), carrying one local feature the stock shim lacks: **`prompt.steer`**. Paseo's default send behavior is `steer`, and the stock ACP adapter never advertises that capability, so a mid-turn message to an ACP-backed agent fails with "Provider does not support prompt.steer".
 
@@ -90,7 +90,9 @@ The fork steers instead of refusing: a `delivery: "steer"` prompt reuses the run
 
 It also fixes resume: upstream binds the native session id only after `session/load` answers, but an ACP agent replays the conversation as `session/update` notifications *before* that response, so the adapter's session-id guard dropped the whole replay and a resumed session (an unarchived agent, or any agent reopened after a daemon restart) showed an empty timeline. The fork binds the id before the load, drains queued notifications before reporting the session ready, and turns replayed `user_message_chunk`s into `user_message` items (live ones stay ignored — the adapter emits its own prompt item).
 
-Upstream files are otherwise untouched apart from import paths and one constructor-parameter-property expansion (Node type-stripping is erasable-syntax only). When bumping `@getpaseo/plugin`, diff the pinned tag's two source files against the vendored copies and re-apply the `Local change vs upstream` markers. `server/acp-adapter.test.ts` covers both steer paths (guide and preempt fallback) and the history replay of a resumed session against a fake agent.
+History sessions release their process. When the daemon reads an archived agent's timeline (the app fetches every visible agent on reconnect, as does `paseo logs`), it resumes the agent with purpose `history`. Upstream fixed the resulting resident CLI process for built-in ACP providers only (paseo #6766); for plugins it kept one bridge plus `zcode-cli` (~500 MB) per archived agent ever viewed. The provider protocol does not pass the purpose to plugins, so an `agent.session_open` before-hook in `index.server.ts` tags such opens with `PASEO_ACP_RESUME_PURPOSE=history` in the session env. The adapter then parks the session once the replay is in: it terminates the process but keeps the session open. The first prompt or configure re-attaches a fresh process with `session/load`, dropping that second replay because the daemon already holds the timeline. Interrupt and close never wake a parked session.
+
+Upstream files are otherwise untouched apart from import paths and one constructor-parameter-property expansion (Node type-stripping is erasable-syntax only). When bumping `@getpaseo/plugin`, diff the pinned tag's two source files against the vendored copies and re-apply the `Local change vs upstream` markers. `server/acp-adapter.test.ts` covers both steer paths (guide and preempt fallback) the history replay of a resumed session, and history-session parking against a fake agent.
 
 ## How the bridge is resolved
 

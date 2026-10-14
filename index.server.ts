@@ -4,6 +4,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 // changes. Upstream refuses steer prompts outright (the daemon's default
 // sendBehavior is "steer", so mid-turn sends to ACP agents error out).
 import { runAcpProvider } from "./server/acp-adapter/acp";
+import { RESUME_PURPOSE_ENV } from "./server/acp-adapter/connection";
 
 import {
   collectAccountView,
@@ -76,6 +77,16 @@ export default function contribute(server: PluginServerContext) {
       // Re-discover models when ZCode's provider stores change (see catalogCacheKey).
       getCatalogCacheKey: async () => catalogCacheKey(),
     }),
+  );
+  // An archived agent is resumed with purpose "history" only so its timeline
+  // can be read. The provider protocol does not carry the purpose, so tag such
+  // opens through the session env: the adapter then releases the bridge once
+  // the replay is in, instead of keeping ~500 MB resident per archived agent.
+  // Runs on every session open of the daemon (any provider) — keep it pure.
+  server.before("agent.session_open", ({ request }) =>
+    request.provider === PROVIDER_ID && request.purpose === "history"
+      ? { ...request, env: { ...request.env, [RESUME_PURPOSE_ENV]: "history" } }
+      : undefined,
   );
   // GLM Coding Plan quota windows for Paseo's Usage modal and sidebar.
   server.registerUsageSource(createZcodeUsageSource(PROVIDER_ID));

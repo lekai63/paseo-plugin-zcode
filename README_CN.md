@@ -62,7 +62,7 @@ server 入口注册了一个 `zcode-acp` **usage source**（usage source 的 id 
 
 桥锁定在 `lekai63/zcode-acp` 的提交（见 `package-lock.json`）。要升级：在 fork 的 `paseo` 分支上同步上游并修改，然后更新本仓库的依赖 ref 与锁文件。
 
-## 内置(vendored)ACP 适配层：steer 支持与恢复修复
+## 内置(vendored)ACP 适配层：steer 支持、恢复修复与历史会话释放
 
 `server/acp-adapter/` 是 paseo v0.11.2 `runAcpProvider` 适配层（`packages/plugin/src/server/acp.ts` + `acp-internal/connection.ts`，Apache-2.0）的本地拷贝，附带官方 shim 缺失的一项能力：**`prompt.steer`**。paseo 默认发送行为就是 `steer`，而官方 ACP 适配层从不声明该能力，导致对 ACP 后端 agent 的运行中插话直接报 "Provider does not support prompt.steer"。
 
@@ -70,7 +70,9 @@ fork 的行为是"转向"而非拒绝：`delivery: "steer"` 的 prompt 复用运
 
 另修复了会话恢复：上游在 `session/load` 响应之后才绑定原生 session id，而 ACP agent 会在该响应**之前**以 `session/update` 通知回放历史，适配层的 session id 校验因此把整段回放丢弃——恢复的会话（取消归档的 agent，或 daemon 重启后重新打开的任意 agent）时间线为空。fork 在 load 之前绑定 id，报告 session ready 前先排空已排队的通知，并把回放中的 `user_message_chunk` 转成 `user_message` 条目（实时的仍忽略——适配层自己会发出 prompt 条目）。
 
-除 import 路径与一处构造器参数属性展开（Node type-stripping 只支持可擦除语法）外，其余与上游一致。升级 `@getpaseo/plugin` 时，请 diff 对应 tag 的两个源文件与本地拷贝，按 `Local change vs upstream` 标记重新套用。`server/acp-adapter.test.ts` 用假 agent 覆盖了两条 steer 路径（引导与抢占回退）以及恢复会话的历史回放。
+历史会话会释放进程。daemon 读取已归档 agent 的时间线时（app 重连会拉取所有可见 agent，`paseo logs` 也一样），会以 `history` 用途恢复该 agent。上游只为内置 ACP provider 修复了由此常驻的 CLI 进程（paseo #6766）；插件 provider 则每查看过一个已归档 agent，就常驻一个 bridge 加 `zcode-cli`（约 500MB）。provider 协议不会把用途传给插件，所以 `index.server.ts` 里的 `agent.session_open` before-hook 会在会话 env 中为这类打开打上 `PASEO_ACP_RESUME_PURPOSE=history` 标记。适配层在回放完成后把会话"停放"：终止进程，但会话保持打开。首次 prompt 或 configure 时用 `session/load` 重新挂接一个新进程，并丢弃这第二次回放，因为 daemon 已持有时间线。interrupt 与 close 不会唤醒停放中的会话。
+
+除 import 路径与一处构造器参数属性展开（Node type-stripping 只支持可擦除语法）外，其余与上游一致。升级 `@getpaseo/plugin` 时，请 diff 对应 tag 的两个源文件与本地拷贝，按 `Local change vs upstream` 标记重新套用。`server/acp-adapter.test.ts` 用假 agent 覆盖了两条 steer 路径（引导与抢占回退）、恢复会话的历史回放，以及历史会话的停放。
 
 ## 桥的解析机制
 

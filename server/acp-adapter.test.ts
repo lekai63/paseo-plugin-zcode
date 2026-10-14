@@ -24,6 +24,7 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 
 import { runAcpProvider } from "./acp-adapter/acp.ts";
+import { RESUME_PURPOSE_ENV } from "./acp-adapter/connection.ts";
 
 /**
  * Fake ACP agent. Prompt-text scripting:
@@ -41,7 +42,8 @@ import { runAcpProvider } from "./acp-adapter/acp.ts";
  * session/load replays a short conversation like the bridge does: every
  * session/update first, the load response last — all in one stdout write,
  * the tightest the response can follow the replay. One update in the middle
- * carries a foreign session id.
+ * carries a foreign session id. A leading `_test/pid` notification reports
+ * the agent process, so tests can tell a fresh process from the first one.
  *
  * With FAKE_GUIDE=1 in the session env the agent also advertises
  * `_meta.zcode.guide` and answers `_zcode/guide` like the bridge: "STEER" is
@@ -83,6 +85,7 @@ lines.on("line", (line) => {
       JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update } });
     const text = (text) => ({ type: "text", text });
     process.stdout.write([
+      JSON.stringify({ jsonrpc: "2.0", method: "_test/pid", params: { pid: process.pid } }),
       update(sid, { sessionUpdate: "user_message_chunk", content: text("run "), messageId: "u1" }),
       update(sid, { sessionUpdate: "user_message_chunk", content: text("the schedule"), messageId: "u1" }),
       update(sid, { sessionUpdate: "agent_thought_chunk", content: text("thinking"), messageId: "r1" }),
@@ -249,6 +252,32 @@ function timelineItems(events: readonly ProviderEvent[]): ProviderTimelineItem[]
   }
   return [...items.values()];
 }
+
+function agentPids(harness: Harness): number[] {
+  return harness.vendorNotifications
+    .filter((entry) => entry.method === "_test/pid")
+    .map((entry) => (entry.params as { pid: number }).pid);
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+const SAVED_SESSION = { version: 1, data: { sessionId: "native-saved" } } as const;
+const HISTORY_ENV = { [RESUME_PURPOSE_ENV]: "history" };
 
 function textPrompt(clientMessageId: string, text: string, delivery?: "steer") {
   return {
@@ -584,6 +613,84 @@ test("a live user_message_chunk stays out of the timeline", async () => {
       ["m1"],
       "only the adapter's own prompt item",
     );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a history open releases the agent process once the replay is in", async () => {
+  const harness = await connectFakeAgent({ persistence: SAVED_SESSION, sessionEnv: HISTORY_ENV });
+  try {
+    const [pid] = agentPids(harness);
+    assert.ok(pid, "the agent reported its pid");
+    await waitUntil(() => !isAlive(pid), "the history process to exit");
+    assert.equal(timelineItems(harness.events).length, 6, "the replay still reached the timeline");
+    assert.equal(
+      harness.events.filter((event) => event.type === "session.runtime_failed").length,
+      0,
+      "the release is not reported as a failure",
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a parked session re-attaches on its first prompt without replaying again", async () => {
+  const harness = await connectFakeAgent({ persistence: SAVED_SESSION, sessionEnv: HISTORY_ENV });
+  try {
+    const [first] = agentPids(harness);
+    await waitUntil(() => !isAlive(first), "the history process to exit");
+    const replayed = harness.events.length;
+
+    await harness.send(textPrompt("m1", "ECHO"));
+    await harness.waitFor(
+      (event) => event.type === "session.turn" && event.state === "completed",
+      "turn completed",
+    );
+    const pids = agentPids(harness);
+    assert.equal(pids.length, 2, "one fresh process loaded the session");
+    assert.notEqual(pids[1], first);
+    const prompts = harness.vendorNotifications.filter((entry) => entry.method === "_test/prompt");
+    assert.deepEqual(prompts.map((entry) => entry.params), [{ text: "ECHO" }]);
+    // The second load replays the conversation again; the daemon already has
+    // it, so only the new turn reaches the timeline.
+    assert.deepEqual(
+      timelineItems(harness.events.slice(replayed)).map((item) => item.id),
+      ["m1"],
+    );
+    assert.ok(isAlive(pids[1]), "the re-attached process stays for the live session");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("interrupting or closing a parked session spawns nothing", async () => {
+  const harness = await connectFakeAgent({ persistence: SAVED_SESSION, sessionEnv: HISTORY_ENV });
+  try {
+    const [pid] = agentPids(harness);
+    await waitUntil(() => !isAlive(pid), "the history process to exit");
+    await harness.send({ type: "session.interrupt", requestId: "interrupt-1", sessionId: "session-1" });
+    await harness.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "interrupt-1",
+      "interrupt completed",
+    );
+    await harness.send({ type: "session.close", requestId: "close-1", sessionId: "session-1" });
+    await harness.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "close-1",
+      "close completed",
+    );
+    assert.equal(agentPids(harness).length, 1, "no process was started");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("an interactive resume keeps its agent process", async () => {
+  const harness = await connectFakeAgent({ persistence: SAVED_SESSION });
+  try {
+    const [pid] = agentPids(harness);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.ok(isAlive(pid));
   } finally {
     await harness.close();
   }

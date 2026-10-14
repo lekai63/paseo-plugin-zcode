@@ -26,6 +26,12 @@
  * Replayed `user_message_chunk`s also become `user_message` items (live ones
  * stay ignored: the adapter renders its own prompts).
  *
+ * And history sessions release their process: an open tagged with
+ * `RESUME_PURPOSE_ENV=history` (the daemon only reads an archived agent's
+ * timeline) parks once the replay is in — the agent process is terminated,
+ * the boundary session stays open — and re-attaches a fresh process on its
+ * first prompt or configure, mirroring paseo #6766 for built-in ACP providers.
+ *
  * The stock adapter refuses steer prompts outright (never advertises the
  * capability); everything else matches upstream except import paths. Re-sync
  * when upgrading the pinned `@getpaseo/plugin` dependency.
@@ -97,10 +103,24 @@ const ADAPTER_CAPABILITIES = [
  */
 const GUIDE_TIMEOUT_MS = 20_000;
 
+/**
+ * Local change vs upstream: the session env key that marks a history-purpose
+ * open. The provider protocol does not carry the daemon's resume purpose, so
+ * the plugin sets it from its `agent.session_open` before-hook.
+ */
+export const RESUME_PURPOSE_ENV = "PASEO_ACP_RESUME_PURPOSE";
+
 interface AcpBoundarySession {
   runtime: AcpRuntime;
   capabilities: readonly ProviderCapability[];
   mutationLane: Promise<void>;
+  /**
+   * Local change vs upstream: set while a history session runs without a
+   * process. `released` settles once the old process is gone; `open` is the
+   * original open input, replayed by wakeSession to re-attach.
+   */
+  parked?: { open: Extract<ProviderInput, { type: "session.open" }>; released: Promise<void> };
+  waking?: Promise<AcpRuntime>;
 }
 
 export async function createAcpProviderConnection(
@@ -177,7 +197,7 @@ export async function createAcpProviderConnection(
         await Promise.all(inFlight);
         const active = [...sessions.values()];
         sessions.clear();
-        await Promise.all(active.map(({ runtime }) => runtime.closeSession()));
+        await Promise.all(active.map(closeBoundarySession));
         listeners.clear();
       })();
       return closePromise;
@@ -248,12 +268,16 @@ async function dispatch(input: ProviderInput, state: AcpConnectionState): Promis
       await openSession(input, state);
       return;
     case "session.prompt":
-      await requireSession(state, input.sessionId).runtime.prompt(input);
+      await (await wakeSession(requireSession(state, input.sessionId), state)).prompt(input);
       return;
-    case "session.interrupt":
-      await requireSession(state, input.sessionId).runtime.interrupt();
+    case "session.interrupt": {
+      // Local change vs upstream: a parked session has no turn to interrupt.
+      const session = requireSession(state, input.sessionId);
+      await session.waking?.catch(() => undefined);
+      if (!session.parked) await session.runtime.interrupt();
       state.emit({ type: "request.completed", requestId: input.requestId });
       return;
+    }
     case "session.permission":
       requireSession(state, input.sessionId).runtime.respondToPermission(
         input.permissionId,
@@ -262,14 +286,16 @@ async function dispatch(input: ProviderInput, state: AcpConnectionState): Promis
       return;
     case "session.configure": {
       const session = requireSession(state, input.sessionId);
-      await mutateSession(session, () => session.runtime.configure(input.changes));
+      await mutateSession(session, async () =>
+        (await wakeSession(session, state)).configure(input.changes),
+      );
       state.emit({ type: "request.completed", requestId: input.requestId });
       return;
     }
     case "session.close": {
       const session = requireSession(state, input.sessionId);
       state.sessions.delete(input.sessionId);
-      await session.runtime.closeSession();
+      await closeBoundarySession(session);
       state.emit({ type: "session.closed", sessionId: input.sessionId });
       state.emit({ type: "request.completed", requestId: input.requestId });
       return;
@@ -358,15 +384,66 @@ async function openSession(
       await runtime.closeSession();
       return;
     }
-    state.sessions.set(input.sessionId, {
+    const session: AcpBoundarySession = {
       runtime,
       capabilities,
       mutationLane: Promise.resolve(),
-    });
+    };
+    state.sessions.set(input.sessionId, session);
+    // Local change vs upstream: a history session is read, not driven — the
+    // replay is in, so release the process (see wakeSession for the way back).
+    if (input.persistence && input.config.env[RESUME_PURPOSE_ENV] === "history") {
+      session.parked = { open: input, released: runtime.close().catch(() => undefined) };
+    }
   } catch (error) {
     await runtime.close();
     throw error;
   }
+}
+
+/**
+ * Local change vs upstream: the session's runtime, re-attaching a fresh
+ * process first when the session is parked. Concurrent callers share one
+ * re-attach; a failed one leaves the session parked for the next caller.
+ */
+async function wakeSession(
+  session: AcpBoundarySession,
+  state: AcpConnectionState,
+): Promise<AcpRuntime> {
+  const parked = session.parked;
+  if (!parked) return session.runtime;
+  session.waking ??= (async () => {
+    await parked.released;
+    const runtime = await AcpRuntime.start({
+      options: state.options,
+      launch: state.launch,
+      boundarySessionId: parked.open.sessionId,
+      env: parked.open.config.env,
+      emit: state.emit,
+    });
+    try {
+      await runtime.reattach(parked.open);
+    } catch (error) {
+      await runtime.close();
+      throw error;
+    }
+    session.runtime = runtime;
+    session.parked = undefined;
+    return runtime;
+  })().finally(() => {
+    session.waking = undefined;
+  });
+  return session.waking;
+}
+
+/** Local change vs upstream: close a session whether it is live or parked. */
+async function closeBoundarySession(session: AcpBoundarySession): Promise<void> {
+  await session.waking?.catch(() => undefined);
+  if (session.parked) {
+    await session.parked.released;
+    return;
+  }
+  await session.runtime.closeSession();
 }
 
 async function mutateSession(
@@ -540,14 +617,7 @@ class AcpRuntime {
   ): Promise<readonly ProviderCapability[]> {
     const mcpServers = toAcpMcpServers(input.config);
     const nativeSessionId = readNativeSessionId(input.persistence);
-    const metadata = {
-      _paseo: {
-        systemPrompt: input.config.systemPrompt,
-        providerOptions: input.config.providerOptions,
-        toolPolicy: input.config.toolPolicy,
-        persist: input.config.persist,
-      },
-    };
+    const metadata = sessionMetadata(input.config);
     let response: Pick<NewSessionResponse, "modes" | "configOptions">;
     if (nativeSessionId) {
       // Local change vs upstream: bind the id first — the agent replays the
@@ -608,6 +678,31 @@ class AcpRuntime {
     }
     this.emit({ type: "session.ready", requestId: input.requestId, sessionId: input.sessionId });
     return sessionCapabilities;
+  }
+
+  /**
+   * Local change vs upstream: load a parked session into this fresh process.
+   * The daemon already holds the timeline, so this load's replay is dropped:
+   * the id is bound only once the response and the queued notifications are
+   * through (upstream's open() order, on purpose here). No session.opened or
+   * session.ready either — the session never closed on the daemon's side.
+   */
+  async reattach(input: Extract<ProviderInput, { type: "session.open" }>): Promise<void> {
+    const nativeSessionId = readNativeSessionId(input.persistence);
+    if (!nativeSessionId) throw new Error("A parked ACP session has no native session id");
+    const response = await this.call(
+      this.connection.loadSession({
+        sessionId: nativeSessionId,
+        cwd: input.config.cwd,
+        mcpServers: toAcpMcpServers(input.config),
+        _meta: sessionMetadata(input.config),
+      }),
+    );
+    await this.drainNotifications();
+    this.nativeSessionId = nativeSessionId;
+    this.modes = response.modes;
+    this.configOptions = response.configOptions ?? [];
+    await this.applyInitialConfig(input.config);
   }
 
   async discover(cwd = process.cwd()): Promise<ProviderCatalog> {
@@ -1472,6 +1567,18 @@ function toAcpPrompt(
     if (content.type === "text" || content.type === "image") return content;
     return { type: "text", text: JSON.stringify(content) };
   });
+}
+
+/** Local change vs upstream: hoisted out of open() so reattach shares it. */
+function sessionMetadata(config: ProviderSessionConfig) {
+  return {
+    _paseo: {
+      systemPrompt: config.systemPrompt,
+      providerOptions: config.providerOptions,
+      toolPolicy: config.toolPolicy,
+      persist: config.persist,
+    },
+  };
 }
 
 function nativePersistence(sessionId: string): ProviderPersistence {
