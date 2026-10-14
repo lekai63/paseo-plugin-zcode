@@ -19,6 +19,8 @@ import type {
   ProviderEvent,
   ProviderInput,
   ProviderLaunch,
+  ProviderPersistence,
+  ProviderTimelineItem,
 } from "@getpaseo/plugin/server/provider";
 
 import { runAcpProvider } from "./acp-adapter/acp.ts";
@@ -31,8 +33,15 @@ import { runAcpProvider } from "./acp-adapter/acp.ts";
  *   - "ASK"     → send a session/request_permission server request, keep the
  *                 prompt pending; when the permission response arrives, echo
  *                 its outcome as a `_test/permissionOutcome` notification
+ *   - "ECHO"    → send a live user_message_chunk (the bridge's echo of a
+ *                 prompt from another client), then end the turn
  * Anything else → generic empty result. Every session/prompt is echoed as a
  * `_test/prompt` notification.
+ *
+ * session/load replays a short conversation like the bridge does: every
+ * session/update first, the load response last — all in one stdout write,
+ * the tightest the response can follow the replay. One update in the middle
+ * carries a foreign session id.
  *
  * With FAKE_GUIDE=1 in the session env the agent also advertises
  * `_meta.zcode.guide` and answers `_zcode/guide` like the bridge: "STEER" is
@@ -49,7 +58,7 @@ lines.on("line", (line) => {
   let message;
   try { message = JSON.parse(line); } catch { return; }
   if (message.method === "initialize") {
-    const agentCapabilities = process.env.FAKE_GUIDE === "1" ? { _meta: { zcode: { guide: true } } } : {};
+    const agentCapabilities = { loadSession: true, ...(process.env.FAKE_GUIDE === "1" ? { _meta: { zcode: { guide: true } } } : {}) };
     send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: message.params.protocolVersion, agentCapabilities } });
   } else if (message.method === "_zcode/guide") {
     const text = (message.params.prompt || []).map((block) => block.text || "").join("");
@@ -68,6 +77,22 @@ lines.on("line", (line) => {
   } else if (message.method === "session/new") {
     send({ jsonrpc: "2.0", method: "_test/env", params: { launch: process.env.FAKE_LAUNCH_MARK ?? null, session: process.env.FAKE_SESSION_MARK ?? null } });
     send({ jsonrpc: "2.0", id: message.id, result: { sessionId: "native-1", modes: null, configOptions: [] } });
+  } else if (message.method === "session/load") {
+    const sid = message.params.sessionId;
+    const update = (sessionId, update) =>
+      JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update } });
+    const text = (text) => ({ type: "text", text });
+    process.stdout.write([
+      update(sid, { sessionUpdate: "user_message_chunk", content: text("run "), messageId: "u1" }),
+      update(sid, { sessionUpdate: "user_message_chunk", content: text("the schedule"), messageId: "u1" }),
+      update(sid, { sessionUpdate: "agent_thought_chunk", content: text("thinking"), messageId: "r1" }),
+      update(sid, { sessionUpdate: "tool_call", toolCallId: "t1", title: "Read file", kind: "read", status: "completed" }),
+      update("someone-else", { sessionUpdate: "agent_message_chunk", content: text("foreign") }),
+      update(sid, { sessionUpdate: "agent_message_chunk", content: text("done"), messageId: "a1" }),
+      update(sid, { sessionUpdate: "user_message_chunk", content: text("again") }),
+      update(sid, { sessionUpdate: "agent_message_chunk", content: text("ok") }),
+      JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { modes: null, configOptions: [] } }),
+    ].join("\\n") + "\\n");
   } else if (message.method === "session/prompt") {
     pendingPrompts.push(message.id);
     const text = (message.params.prompt || []).map((block) => block.text || "").join("");
@@ -80,6 +105,10 @@ lines.on("line", (line) => {
         send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "native-1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "steered reply" } } } });
         send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
       }, 15);
+    } else if (text === "ECHO") {
+      pendingPrompts.pop();
+      send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: message.params.sessionId, update: { sessionUpdate: "user_message_chunk", content: { type: "text", text: "from another client" }, messageId: "uprompt_1" } } });
+      send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
     } else if (text === "ASK") {
       send({
         jsonrpc: "2.0",
@@ -124,6 +153,8 @@ interface ConnectOptions {
   /** Daemon-resolved launch; receives the fake agent script as its last arg. */
   launch?: (script: string) => ProviderLaunch;
   sessionEnv?: Record<string, string>;
+  /** Resume this native session (session/load) instead of session/new. */
+  persistence?: ProviderPersistence;
 }
 
 async function connectFakeAgent(options: ConnectOptions = {}): Promise<Harness> {
@@ -149,7 +180,13 @@ async function connectFakeAgent(options: ConnectOptions = {}): Promise<Harness> 
   const connection = await registration.connect({
     launch: options.launch?.(script),
     versions: [1],
-    capabilities: ["prompt.message", "prompt.steer", "session.configure", "permission"],
+    capabilities: [
+      "prompt.message",
+      "prompt.steer",
+      "session.configure",
+      "session.persistence",
+      "permission",
+    ],
   });
   const events: ProviderEvent[] = [];
   connection.onEvent((event) => events.push(event));
@@ -187,7 +224,8 @@ async function connectFakeAgent(options: ConnectOptions = {}): Promise<Harness> 
     type: "session.open",
     requestId: "open-1",
     sessionId: "session-1",
-    history: "skip",
+    history: options.persistence ? "replay" : "skip",
+    ...(options.persistence ? { persistence: options.persistence } : {}),
     config: {
       cwd: os.tmpdir(),
       env: options.sessionEnv ?? {},
@@ -201,6 +239,15 @@ async function connectFakeAgent(options: ConnectOptions = {}): Promise<Harness> 
     "session.ready",
   );
   return harness;
+}
+
+/** Latest snapshot per timeline item id, in first-seen order. */
+function timelineItems(events: readonly ProviderEvent[]): ProviderTimelineItem[] {
+  const items = new Map<string, ProviderTimelineItem>();
+  for (const event of events) {
+    if (event.type === "timeline.item") items.set(event.item.id, event.item);
+  }
+  return [...items.values()];
 }
 
 function textPrompt(clientMessageId: string, text: string, delivery?: "steer") {
@@ -481,6 +528,61 @@ test("a bridge without native guide never receives _zcode/guide", async () => {
     assert.equal(
       harness.vendorNotifications.filter((entry) => entry.method === "_test/guide").length,
       0,
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a resumed session replays its history before session.ready", async () => {
+  const harness = await connectFakeAgent({
+    persistence: { version: 1, data: { sessionId: "native-saved" } },
+  });
+  try {
+    const opened = harness.events.find((event) => event.type === "session.opened");
+    assert.ok(opened?.type === "session.opened");
+    assert.deepEqual(opened.persistence, { version: 1, data: { sessionId: "native-saved" } });
+    // The whole replay arrived ahead of the load response; none of it may be
+    // dropped, and the foreign-session update stays out.
+    assert.deepEqual(
+      timelineItems(harness.events).map((item) =>
+        "text" in item ? `${item.type}: ${item.text}` : item.type,
+      ),
+      [
+        "user_message: run the schedule",
+        "reasoning: thinking",
+        "tool_call",
+        "assistant_message: done",
+        "user_message: again",
+        "assistant_message: ok",
+      ],
+    );
+    const ready = harness.events.findIndex((event) => event.type === "session.ready");
+    const lastItem = harness.events.findLastIndex((event) => event.type === "timeline.item");
+    assert.ok(lastItem < ready, "replay is complete before the session is ready");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a live user_message_chunk stays out of the timeline", async () => {
+  const harness = await connectFakeAgent({
+    persistence: { version: 1, data: { sessionId: "native-saved" } },
+  });
+  try {
+    const replayed = harness.events.length;
+    await harness.send(textPrompt("m1", "ECHO"));
+    await harness.waitFor(
+      (event) => event.type === "session.turn" && event.state === "completed",
+      "turn completed",
+    );
+    const userMessages = timelineItems(harness.events.slice(replayed)).filter(
+      (item) => item.type === "user_message",
+    );
+    assert.deepEqual(
+      userMessages.map((item) => item.id),
+      ["m1"],
+      "only the adapter's own prompt item",
     );
   } finally {
     await harness.close();

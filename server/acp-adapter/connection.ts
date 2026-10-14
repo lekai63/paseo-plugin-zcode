@@ -18,6 +18,14 @@
  *     model reads the message at its next step, no preempt); the preempting
  *     second session/prompt above is the fallback when the bridge declines.
  *
+ * Plus a resume fix: `open()` binds the native session id before
+ * `session/load`, not after. An ACP agent replays the conversation as
+ * `session/update` notifications ahead of its load response, and upstream's
+ * session-id guard dropped all of them — a resumed session (e.g. an
+ * unarchived agent after a daemon restart) came back with an empty timeline.
+ * Replayed `user_message_chunk`s also become `user_message` items (live ones
+ * stay ignored: the adapter renders its own prompts).
+ *
  * The stock adapter refuses steer prompts outright (never advertises the
  * capability); everything else matches upstream except import paths. Re-sync
  * when upgrading the pinned `@getpaseo/plugin` dependency.
@@ -410,9 +418,14 @@ class AcpRuntime {
    * or a turn boundary ends it (#4699).
    */
   private readonly fallbackChunkIds = new Map<
-    "agent_message_chunk" | "agent_thought_chunk",
+    "agent_message_chunk" | "agent_thought_chunk" | "user_message_chunk",
     string
   >();
+  /**
+   * Local change vs upstream: true while `session/load` replays history, the
+   * only time a `user_message_chunk` becomes a timeline item.
+   */
+  private replayingHistory = false;
   private closing = false;
   private processFailed = false;
   private configTransaction = false;
@@ -537,15 +550,27 @@ class AcpRuntime {
     };
     let response: Pick<NewSessionResponse, "modes" | "configOptions">;
     if (nativeSessionId) {
-      response = await this.call(
-        this.connection.loadSession({
-          sessionId: nativeSessionId,
-          cwd: input.config.cwd,
-          mcpServers,
-          _meta: metadata,
-        }),
-      );
+      // Local change vs upstream: bind the id first — the agent replays the
+      // history as session/update notifications BEFORE answering session/load,
+      // and sessionUpdate drops every notification for another session id.
       this.nativeSessionId = nativeSessionId;
+      this.replayingHistory = true;
+      try {
+        response = await this.call(
+          this.connection.loadSession({
+            sessionId: nativeSessionId,
+            cwd: input.config.cwd,
+            mcpServers,
+            _meta: metadata,
+          }),
+        );
+        // The SDK does not await notification handlers before resolving the
+        // response, so the tail of the replay can still be queued here.
+        await this.drainNotifications();
+      } finally {
+        this.replayingHistory = false;
+        this.fallbackChunkIds.clear();
+      }
     } else {
       const newSession = await this.call(
         this.connection.newSession({
@@ -1045,7 +1070,22 @@ class AcpRuntime {
       update.sessionUpdate === "user_message_chunk"
     ) {
       if (update.sessionUpdate === "user_message_chunk") {
-        this.fallbackChunkIds.clear();
+        // Local change vs upstream: only a replayed user message is rendered;
+        // admitPrompt already emitted the live prompt.
+        if (!this.replayingHistory || update.content.type !== "text") {
+          this.fallbackChunkIds.clear();
+          return;
+        }
+        this.fallbackChunkIds.delete("agent_message_chunk");
+        this.fallbackChunkIds.delete("agent_thought_chunk");
+        const id = this.resolveChunkId(update.sessionUpdate, update.messageId);
+        const text = `${this.messages.get(id) ?? ""}${update.content.text}`;
+        this.messages.set(id, text);
+        this.emit({
+          type: "timeline.item",
+          sessionId: this.options.boundarySessionId,
+          item: { type: "user_message", id, text, messageId: update.messageId ?? undefined },
+        });
         return;
       }
       // A chunk of one kind ends the other kind's item, whatever its content
@@ -1055,6 +1095,7 @@ class AcpRuntime {
           ? "agent_thought_chunk"
           : "agent_message_chunk",
       );
+      this.fallbackChunkIds.delete("user_message_chunk");
       if (update.content.type !== "text") return;
       const id = this.resolveChunkId(update.sessionUpdate, update.messageId);
       const text = `${this.messages.get(id) ?? ""}${update.content.text}`;
@@ -1083,7 +1124,7 @@ class AcpRuntime {
   }
 
   private resolveChunkId(
-    kind: "agent_message_chunk" | "agent_thought_chunk",
+    kind: "agent_message_chunk" | "agent_thought_chunk" | "user_message_chunk",
     messageId: string | null | undefined,
   ): string {
     if (messageId) {
