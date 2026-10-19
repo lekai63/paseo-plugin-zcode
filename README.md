@@ -22,11 +22,16 @@ The plugin ships no UI and no protocol code. On `paseo plugin add` / `update`, t
 
 | Requirement | Notes |
 | --- | --- |
-| Paseo ≥ 0.8.0 on the daemon | provider-plugin API; tested against 0.12.x |
+| Paseo ≥ 0.11.0 on the daemon | provider-plugin API (`status`, `getCatalogCacheKey`, `registerUsageSource`); tested against 0.12.x |
 | Node.js ≥ 22 on the daemon host | the bridge needs `node:sqlite`; a capable node binary is probed automatically and never resolves to the Electron daemon binary |
 | ZCode installed and signed in | desktop app or CLI (≥ 0.14.8; the 0.16+ line is fully supported); credentials come from `~/.zcode/v2/config.json` |
 | Plugins enabled | `"pluginsEnabled": true` at the root of `~/.paseo/config.json`, then `paseo reload` |
 | npm + network on the daemon host | needed during `add`/`update` to install the bridge |
+
+## What it contributes to Paseo
+
+- A **`zcode` provider** — streaming, editing modes (Plan / Build / Edit / Guarded / Yolo), permissions, session resume, and the model + thinking catalogs, all over the standard Agent Client Protocol.
+- A **GLM Coding Plan usage source** — the plugin registers a Paseo usage card (shown in **Usage** and `paseo usage`) that reads the same `~/.zcode/v2/config.json` credentials and queries the official quota endpoint, no bridge process spawned. On a standard Coding Plan account it shows the 5-hour, weekly, and MCP windows with reset times. On a non-official active provider (a gateway, custom endpoint, or a keyless plan) it degrades to `unavailable` rather than guessing.
 
 ## Install
 
@@ -78,6 +83,7 @@ Nothing to configure when ZCode is at a default location: `/Applications/ZCode.a
 | `Failed to create agent: Internal error` | the ZCode backend died at boot. Check the bridge diary `~/.zcode/cli/log/zcode-acp-<date>.log`; if it says `无法定位 CLI ZCode Built-in Provider Config`, the plugin could not find the real `zcode.cjs` — set `agents.providers.zcode.env.ZCODE_BIN` |
 | status: `zcode-acp-server was not found` | `paseo plugin update` to re-install the bridge, or `npm i -g zcode-acp-server` |
 | status shows a too-old Node | install Node ≥ 22 on the daemon host, or point `agents.providers.zcode.command` at a specific node binary |
+| Usage card shows `quota endpoint reported no limits` | your active ZCode provider is not an official Coding Plan (e.g. a gateway/custom endpoint, or keyless after a plan upgrade). Expected — the official quota API has nothing to report. Sign into a Coding Plan account to populate the card. |
 | first session slow, later ones fine | expected warm-up (bridge install + skill discovery) |
 
 `paseo provider diagnostic zcode` always shows the exact bridge version and node binary the plugin will launch, including whether a `ZCODE_BIN` override is in effect.
@@ -90,9 +96,9 @@ Nothing to configure when ZCode is at a default location: `/Applications/ZCode.a
 
 ## Development
 
-- `index.server.ts` — the entire plugin. No client entry, no build artifacts committed.
+- `index.server.ts` — provider registration: bridge/node/CLI resolution and the generated launcher shim. `server/usage.ts` — the GLM Coding Plan usage source. No client entry, no build artifacts committed.
 - `npm run typecheck` — checks against `@getpaseo/plugin` (a devDependency; the host provides it at runtime).
-- `npm run smoke` — compiles the plugin and drives a real ACP session through it (status probe, bridge handshake).
+- `npm run smoke` — compiles the plugin and drives a real ACP session through it (status probe, bridge handshake, usage discover+fetch).
 - `main` is what `paseo plugin add` tracks; releases are git tags (`v0.3.2` style).
 
 ## License

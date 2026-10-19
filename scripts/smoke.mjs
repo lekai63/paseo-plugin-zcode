@@ -13,11 +13,14 @@ const mod = await import(compiled);
 const contribute = mod.default;
 
 let registered;
+let usageRegistered;
 const fakeServer = {
   registerProvider(reg) {
     registered = reg;
   },
-  registerUsageSource() {},
+  registerUsageSource(reg) {
+    usageRegistered = reg;
+  },
   registerSettings() {
     return { read: async () => ({ status: "ready", revision: "0", values: {} }), subscribe() { return () => {}; } };
   },
@@ -32,6 +35,16 @@ console.log("command[0] basename:", path.basename(registered.command[0]));
 
 const status = await registered.status({});
 console.log("status:", status);
+
+console.log("usage id:", usageRegistered?.id, "label:", usageRegistered?.label);
+if (usageRegistered) {
+  const accounts = await usageRegistered.discover({ kind: "global" });
+  console.log("usage accounts:", accounts.length, accounts[0]?.label ?? "(none)");
+  if (accounts[0]) {
+    const report = await usageRegistered.fetch(accounts[0].input);
+    console.log("usage report status:", report.status);
+  }
+}
 
 // The ACP connection is what the daemon drives; verify the bridge actually
 // speaks ACP over stdio through the resolved command.

@@ -1,6 +1,6 @@
 {
   "name": "paseo-plugin-zcode",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -12,7 +12,7 @@
   "private": true,
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "smoke": "tsc index.server.ts --outDir dist-plugin --module esnext --target es2022 --moduleResolution bundler --skipLibCheck && node scripts/smoke.mjs"
+    "smoke": "tsc index.server.ts server/usage.ts --outDir dist-plugin --module esnext --target es2022 --moduleResolution bundler --skipLibCheck --esModuleInterop && node scripts/smoke.mjs"
   },
   "dependencies": {
     "zcode-acp-server": "^0.72.0"

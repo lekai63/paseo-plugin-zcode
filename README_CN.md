@@ -18,11 +18,16 @@ Paseo daemon
 
 插件本身不含 UI，也不含协议代码。执行 `paseo plugin add` / `update` 时，manifest 的 `build` 会在托管检出目录里跑 `npm ci --omit=dev`，装上仓库钉定的桥版本。随后插件定位这份拷贝（优先检出内副本，其次常见全局根目录），解析出 ZCode CLI，注册 provider `zcode`。
 
+## 它给 Paseo 带来什么
+
+- 一个 **`zcode` provider**：流式输出、编辑模式（Plan / Build / Edit / Guarded / Yolo）、权限确认、续话、模型与思考强度列表，全走标准 Agent Client Protocol。
+- 一个 **GLM Coding Plan 用量卡**：插件向 Paseo 注册用量源（「用量」界面和 `paseo usage` 可见），读同一份 `~/.zcode/v2/config.json` 凭证、直接查官方配额接口，不额外起桥进程。标准 Coding Plan 账号显示 5 小时、每周、MCP 三个窗口及重置时间；当前激活 provider 不是官方 Plan（网关、自定义端点、升级后无密钥的 Plan）时优雅降级为 `unavailable`，不瞎猜。
+
 ## 前置条件
 
 | 条件 | 说明 |
 | --- | --- |
-| daemon 上 Paseo ≥ 0.8.0 | provider 插件 API 自 0.8 起；本插件在 0.12.x 上实测 |
+| daemon 上 Paseo ≥ 0.11.0 | provider 插件 API（`status`、`getCatalogCacheKey`、`registerUsageSource`）；本插件在 0.12.x 上实测 |
 | daemon 主机 Node.js ≥ 22 | 桥依赖 `node:sqlite`；插件会实测探测可用 node，绝不会选中 Electron 托管的 daemon 二进制 |
 | 已安装并登录 ZCode | 桌面 App 或 CLI（≥ 0.14.8；0.16+ 全线支持）；凭证读自 `~/.zcode/v2/config.json` |
 | 开启插件功能 | `~/.paseo/config.json` 根级写 `"pluginsEnabled": true`，然后 `paseo reload` |
@@ -78,6 +83,7 @@ daemon 同样支持对桥启动做 `command` 覆盖（replace / append 两种模
 | `Failed to create agent: Internal error` | ZCode backend 启动即死。先查桥日记 `~/.zcode/cli/log/zcode-acp-<date>.log`；若出现 `无法定位 CLI ZCode Built-in Provider Config`，说明插件没找到真实的 `zcode.cjs`，请设置 `agents.providers.zcode.env.ZCODE_BIN` |
 | 状态提示 `zcode-acp-server was not found` | 执行 `paseo plugin update` 重装桥，或 `npm i -g zcode-acp-server` |
 | 状态提示 node 版本过旧 | 在 daemon 主机装 Node ≥ 22，或用 `agents.providers.zcode.command` 指定某个 node 二进制 |
+| 用量卡显示 `quota endpoint reported no limits` | 当前激活的 ZCode provider 不是官方 Coding Plan（网关/自定义端点，或升级 Plan 后无密钥）。属预期——官方配额接口查不到该账号。登录 Coding Plan 账号后卡片就会有数据 |
 | 只有第一次会话特别慢 | 属正常预热（安装桥 + skill 发现） |
 
 `paseo provider diagnostic zcode` 会显示插件实际将用于启动桥的 node 二进制与桥版本，以及 `ZCODE_BIN` 覆盖是否生效。
@@ -90,9 +96,9 @@ daemon 同样支持对桥启动做 `command` 覆盖（replace / append 两种模
 
 ## 开发
 
-- `index.server.ts` —— 插件全部内容。无 client 入口，不提交构建产物。
+- `index.server.ts` —— provider 注册：定位桥/node/ZCode CLI 并生成启动垫片。`server/usage.ts` —— GLM Coding Plan 用量源。无 client 入口，不提交构建产物。
 - `npm run typecheck` —— 对着 `@getpaseo/plugin`（devDependency，运行时由宿主提供）做类型检查。
-- `scripts/smoke.mjs` —— 本地验证脚本：编译插件并通过它驱动一次真实 ACP 会话。
+- `npm run smoke` —— 编译插件并通过它驱动一次真实 ACP 会话（status 探测、桥握手、用量 discover+fetch）。
 - `main` 是 `paseo plugin add` 跟踪的分支；发布以 git tag 标记（形如 `v0.3.2`）。
 
 ## 许可证
