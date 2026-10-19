@@ -112,26 +112,67 @@ function checkoutInstalls(): string[] {
   }
 }
 
-function resolveLaunch(): { command: readonly [string, string] } | undefined {
-  for (const cli of checkoutInstalls()) {
-    return { command: [nodeForCli(cli), cli] };
-  }
-  // When the daemon shares a node install with the bridge (CLI-hosted case),
-  // the worker script's ancestor chain covers the global install directory.
-  try {
-    const { createRequire } = require("node:module");
-    const cli = createRequire(process.argv[1]).resolve("zcode-acp-server/dist/cli.js");
-    return { command: [nodeForCli(cli), cli] };
-  } catch {
-    // fall through to the well-known roots scan
-  }
-  for (const install of globalInstalls()) {
-    const cli = path.join(install.globalRoot, RELATIVE_ENTRY);
-    if (fs.existsSync(cli)) {
-      return { command: [install.nodeBin, cli] };
+// The bridge injects the ZCode provider tables only when the CLI entry it
+// resolves ends in .cjs/.mjs/.js. Homebrew-style installs put an extensionless
+// symlink on PATH (`zcode` -> ZCode.app/…/glm/zcode.cjs), that check fails,
+// and the spawned backend dies at boot with "无法定位 CLI ZCode Built-in
+// Provider Config". Resolving the symlink and passing the real path as
+// ZCODE_BIN keeps the injection active. POSIX: wrap through /usr/bin/env so
+// no daemon config is needed; Windows users need the same value under
+// agents.providers.zcode.env.
+function zcodeBinOverride(): string | undefined {
+  if (process.platform === "win32") return undefined;
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!dir) continue;
+    const hit = path.join(dir, "zcode");
+    try {
+      if (!fs.existsSync(hit)) continue;
+      const real = fs.realpathSync(hit);
+      if (/\.(cjs|mjs|js)$/.test(real)) return real;
+    } catch {
+      // unreadable PATH segment
     }
   }
   return undefined;
+}
+
+interface Launch {
+  command: readonly [string, ...string[]];
+  zcodeBin?: string;
+}
+
+function resolveLaunch(): Launch | undefined {
+  let inner: [string, string] | undefined;
+  for (const cli of checkoutInstalls()) {
+    inner = [nodeForCli(cli), cli];
+    break;
+  }
+  if (!inner) {
+    // When the daemon shares a node install with the bridge (CLI-hosted case),
+    // the worker script's ancestor chain covers the global install directory.
+    try {
+      const { createRequire } = require("node:module");
+      const cli = createRequire(process.argv[1]).resolve("zcode-acp-server/dist/cli.js");
+      inner = [nodeForCli(cli), cli];
+    } catch {
+      // fall through to the well-known roots scan
+    }
+  }
+  if (!inner) {
+    for (const install of globalInstalls()) {
+      const cli = path.join(install.globalRoot, RELATIVE_ENTRY);
+      if (fs.existsSync(cli)) {
+        inner = [install.nodeBin, cli];
+        break;
+      }
+    }
+  }
+  if (!inner) return undefined;
+  const zcodeBin = zcodeBinOverride();
+  if (zcodeBin) {
+    return { command: ["/usr/bin/env", `ZCODE_BIN=${zcodeBin}`, inner[0], inner[1]], zcodeBin };
+  }
+  return { command: inner };
 }
 
 const NOT_FOUND =
@@ -184,20 +225,30 @@ export default function contribute(server: PluginServerContext) {
     async status(request) {
       // The daemon resolves `agents.providers.zcode.command` overrides into
       // launch before calling status; probe what it will actually run.
-      const command = request?.launch
-        ? ([request.launch.command, ...request.launch.args] as const)
-        : launch?.command;
-      if (!command) return { available: false, diagnostic: NOT_FOUND };
-      const [nodeBin, cliPath] = command;
+      const command: readonly string[] = request?.launch
+        ? [request.launch.command, ...request.launch.args]
+        : launch?.command ?? [];
+      // Accept both launch shapes: [node, cli.js] and
+      // [/usr/bin/env, ZCODE_BIN=…, node, cli.js].
+      const cliPath = command.filter((arg) => arg.endsWith(".js")).pop();
       if (!cliPath || !fs.existsSync(cliPath)) {
         return { available: false, diagnostic: NOT_FOUND };
       }
+      const nodeBin = command[command.indexOf(cliPath) - 1];
       const major = await nodeMajor(nodeBin);
       const version = bridgeVersion(cliPath);
       if (major !== undefined && major < MIN_NODE_MAJOR) {
         return {
           available: false,
           diagnostic: `zcode-acp-server needs Node >= ${MIN_NODE_MAJOR}, but ${nodeBin} is v${major}.x`,
+        };
+      }
+      if (!command.some((arg) => arg.startsWith("ZCODE_BIN="))) {
+        return {
+          available: true,
+          diagnostic:
+            `zcode-acp-server ${version ?? "?"} via ${nodeBin}; ZCode CLI not found on PATH — ` +
+            "if sessions die with 'built-in provider config' errors, set agents.providers.zcode.env.ZCODE_BIN to zcode.cjs",
         };
       }
       return { available: true, diagnostic: `zcode-acp-server ${version ?? "?"} via ${nodeBin}` };

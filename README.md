@@ -8,6 +8,7 @@ A [Paseo](https://paseo.sh) provider plugin that registers **ZCode** (Z.ai's cod
 
 - **Paseo >= 0.8.0** (the provider plugin API does not exist in 0.7.x)
 - **Node.js >= 22** on the daemon host (the bridge uses `node:sqlite`)
+- The **ZCode desktop app or CLI** installed and signed in (credentials at `~/.zcode/v2/config.json`)
 - Plugins enabled on the daemon: root-level `"pluginsEnabled": true` in `~/.paseo/config.json`, then `paseo reload`
 
 The bridge installs itself: on `paseo plugin add` / `update`, the manifest `build` runs `npm ci --omit=dev` inside the managed checkout, which pulls the `zcode-acp-server` version pinned in this repo's lockfile (currently ^0.72.0). A global install (`npm i -g zcode-acp-server`) is optional — the plugin prefers the checkout-local copy (under `checkout/node_modules/`) and falls back to well-known global roots.
@@ -45,6 +46,7 @@ If the bridge cannot be found, the provider reports `unavailable` with an instal
 
 - The provider id is `zcode`. A `providers.zcode` entry in `~/.paseo/config.json` would collide — remove it before installing.
 - The first bridge start can take a while (npm warm-up); the plugin allows 180 s for the ACP handshake.
+- On macOS/Linux the plugin resolves the ZCode CLI on `PATH`, follows it to the real `zcode.cjs`, and launches the bridge through `/usr/bin/env ZCODE_BIN=<real path>` — the bridge only injects the provider tables for a `.cjs`/`.js` entry, so an extensionless symlink (Homebrew-style installs) would otherwise make the backend die at boot with "无法定位 CLI ZCode Built-in Provider Config". On Windows, if sessions fail the same way, set it yourself: `agents.providers.zcode.env.ZCODE_BIN` = `<…>\ZCode\resources\glm\zcode.cjs`.
 - The icon is Z.ai's official logo mark (source: `z-cdn.chatglm.cn/z-ai/static/logo.svg`), used nominatively to indicate which agent this plugin wraps. Not affiliated with or endorsed by Zhipu AI.
 
 ## License
