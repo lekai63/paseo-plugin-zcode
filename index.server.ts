@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -77,16 +78,18 @@ function globalInstalls(): GlobalInstall[] {
   return versionDirs;
 }
 
+const MIN_NODE_MAJOR = 22;
+
 function nodeForCli(cli: string): string {
   for (const install of globalInstalls()) {
     if (cli.startsWith(install.globalRoot + path.sep)) return install.nodeBin;
   }
   // Checkout-local copies have no owning global root. Pair them with the
-  // newest installed node >= 18 (the bridge needs post-18 APIs such as
-  // Writable.toWeb) instead of process.execPath, which is the Electron
-  // binary when the daemon is app-hosted and breaks the ACP handshake.
+  // newest installed node >= 22 (the bridge uses node:sqlite and other
+  // post-22 APIs) instead of process.execPath, which is the Electron binary
+  // when the daemon is app-hosted and breaks the ACP handshake.
   for (const install of globalInstalls()) {
-    if (install.major >= 18 && fs.existsSync(install.nodeBin)) return install.nodeBin;
+    if (install.major >= MIN_NODE_MAJOR && fs.existsSync(install.nodeBin)) return install.nodeBin;
   }
   return process.execPath;
 }
@@ -109,7 +112,7 @@ function checkoutInstalls(): string[] {
   }
 }
 
-function resolveLaunch(): { command: readonly [string, string] } {
+function resolveLaunch(): { command: readonly [string, string] } | undefined {
   for (const cli of checkoutInstalls()) {
     return { command: [nodeForCli(cli), cli] };
   }
@@ -128,24 +131,77 @@ function resolveLaunch(): { command: readonly [string, string] } {
       return { command: [install.nodeBin, cli] };
     }
   }
-  throw new Error(
-    "zcode-acp-server was not found; install it with `npm i -g zcode-acp-server`",
-  );
+  return undefined;
+}
+
+const NOT_FOUND =
+  "zcode-acp-server was not found; install it with `npm i -g zcode-acp-server@0.72.0` or later";
+
+function bridgeVersion(cliPath: string): string | undefined {
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(path.dirname(path.dirname(cliPath)), "package.json"), "utf8"),
+    ) as { version?: string };
+    return pkg.version;
+  } catch {
+    return undefined;
+  }
+}
+
+function nodeMajor(nodeBin: string): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    execFile(nodeBin, ["--version"], { timeout: 5000 }, (error, stdout) => {
+      resolve(error ? undefined : versionMajor(stdout.trim()));
+    });
+  });
 }
 
 export default function contribute(server: PluginServerContext) {
-  server.registerProvider(
-    runAcpProvider({
-      id: "zcode",
-      label: "ZCode",
-      icon: "icon.svg",
-      description:
-        "ZCode agent backend (Z.ai GLM) via the npm zcode-acp-server bridge",
-      command: resolveLaunch().command,
-      // First bridge start can take 30s+ while npm warms up; widen the
-      // handshake window.
-      acpOptions: { startupTimeoutMs: 180_000 },
-    }),
-  );
+  const launch = resolveLaunch();
+  const registration = runAcpProvider({
+    id: "zcode",
+    label: "ZCode",
+    icon: "icon.svg",
+    description:
+      "ZCode agent backend (Z.ai GLM) via the npm zcode-acp-server bridge",
+    // If the bridge is missing, status() reports unavailable; this fallback
+    // keeps the registration valid and gives a clear message if something
+    // connects anyway.
+    command: launch?.command ?? [
+      "node",
+      "-e",
+      "process.stderr.write('zcode-acp-server is not installed'); process.exit(1)",
+    ],
+    // First bridge start can take 30s+ while npm warms up; widen the
+    // handshake window.
+    acpOptions: { startupTimeoutMs: 180_000 },
+  });
+  // runAcpProvider only carries a command, so a resolution failure surfaces
+  // through status instead of throwing during contribute and failing the
+  // whole plugin load.
+  server.registerProvider({
+    ...registration,
+    async status(request) {
+      // The daemon resolves `agents.providers.zcode.command` overrides into
+      // launch before calling status; probe what it will actually run.
+      const command = request?.launch
+        ? ([request.launch.command, ...request.launch.args] as const)
+        : launch?.command;
+      if (!command) return { available: false, diagnostic: NOT_FOUND };
+      const [nodeBin, cliPath] = command;
+      if (!cliPath || !fs.existsSync(cliPath)) {
+        return { available: false, diagnostic: NOT_FOUND };
+      }
+      const major = await nodeMajor(nodeBin);
+      const version = bridgeVersion(cliPath);
+      if (major !== undefined && major < MIN_NODE_MAJOR) {
+        return {
+          available: false,
+          diagnostic: `zcode-acp-server needs Node >= ${MIN_NODE_MAJOR}, but ${nodeBin} is v${major}.x`,
+        };
+      }
+      return { available: true, diagnostic: `zcode-acp-server ${version ?? "?"} via ${nodeBin}` };
+    },
+  });
   return () => {};
 }

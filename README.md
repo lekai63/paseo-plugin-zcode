@@ -7,9 +7,10 @@ A [Paseo](https://paseo.sh) provider plugin that registers **ZCode** (Z.ai's cod
 ## Prerequisites
 
 - **Paseo >= 0.8.0** (the provider plugin API does not exist in 0.7.x)
+- **Node.js >= 22** on the daemon host (the bridge uses `node:sqlite`)
 - Plugins enabled on the daemon: root-level `"pluginsEnabled": true` in `~/.paseo/config.json`, then `paseo reload`
 
-The bridge installs itself: on `paseo plugin add` / `update`, the manifest `build` runs `npm ci --omit=dev` inside the managed checkout, which pulls `zcode-acp-server` from the committed lockfile. A global install (`npm i -g zcode-acp-server`) is optional — the plugin prefers the checkout-local copy (under `checkout/node_modules/`) and falls back to well-known global roots.
+The bridge installs itself: on `paseo plugin add` / `update`, the manifest `build` runs `npm ci --omit=dev` inside the managed checkout, which pulls the `zcode-acp-server` version pinned in this repo's lockfile (currently ^0.72.0). A global install (`npm i -g zcode-acp-server`) is optional — the plugin prefers the checkout-local copy (under `checkout/node_modules/`) and falls back to well-known global roots.
 
 ## Install
 
@@ -26,13 +27,19 @@ paseo run --provider zcode "Fix the failing test"
 
 ## Upgrade the bridge
 
+The checkout-local copy wins, so upgrading the bridge means updating this plugin:
+
 ```bash
-npm i -g zcode-acp-server@latest   # the plugin picks it up as-is
+paseo plugin update paseo-plugin-zcode   # re-runs npm ci from the committed lockfile
 ```
+
+To pull a newer bridge than the lockfile pins, bump `zcode-acp-server` in `package.json`, regenerate the lockfile, and release; or install a newer bridge globally and remove the checkout copy (not recommended — the global copy then becomes invisible to `paseo plugin update`).
 
 ## How the bridge is resolved
 
-Paseo evaluates plugin bundles with an injected `require` and no `__dirname`/`import.meta`, and the daemon can be hosted either by a node CLI install or by the desktop app (Electron). The plugin therefore locates the bridge by scanning the well-known npm global roots — fnm, nvm, mise, `/usr/local`, Homebrew — pairing each root with its own `node` binary, with the worker-script anchor (`createRequire(process.argv[1])`) tried first. A checkout-local bridge has no owning global root, so it is paired with whichever installed `node` binary is found first. Nothing depends on `PATH`, so the provider works no matter how the daemon was started, and the bridge never launches through an Electron binary.
+Paseo evaluates plugin bundles with an injected `require` and no `__dirname`/`import.meta`, and the daemon can be hosted either by a node CLI install or by the desktop app (Electron). The plugin therefore locates the bridge by scanning the well-known npm global roots — fnm, nvm, mise, `/usr/local`, Homebrew — pairing each root with its own `node` binary, with the worker-script anchor (`createRequire(process.argv[1])`) tried first. A checkout-local bridge has no owning global root, so it is paired with the newest installed `node` binary at major version 22 or above (the bridge needs post-22 APIs such as `node:sqlite`). Nothing depends on `PATH`, so the provider works no matter how the daemon was started, and the bridge never launches through an Electron binary.
+
+If the bridge cannot be found, the provider reports `unavailable` with an install hint instead of failing the whole plugin load, so `paseo provider ls` shows the reason.
 
 ## Notes & limitations
 
