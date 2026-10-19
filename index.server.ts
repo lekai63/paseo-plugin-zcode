@@ -1,7 +1,8 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { runAcpProvider } from "@getpaseo/plugin/server/acp";
@@ -10,11 +11,21 @@ import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 // `__dirname` or a usable `import.meta`. The daemon may be hosted by a node
 // CLI install or by the desktop app (Electron), which changes where module
 // resolution is anchored, so the bridge entry is found by scanning the
-// well-known npm global roots — pairing each root with its own `node`
-// binary so the bridge never launches through an Electron binary or a
-// PATH-dependent lookup.
+// well-known npm global roots.
+//
+// The bridge is then launched through a tiny generated `zcode-acp-server`
+// shim (see buildLauncher) rather than a bare `node cli.js`. Two reasons:
+//   1. ZCode's app-bundle CLI is reached via an extensionless symlink
+//      (`zcode` -> …/glm/zcode.cjs); the bridge only injects the provider
+//      tables when the CLI entry it spawns ends in .cjs/.js, so a bare spawn
+//      leaves the backend unable to locate its built-in provider config and
+//      it dies at boot. The shim resolves the real path and sets ZCODE_BIN.
+//   2. On Windows there is no /usr/bin/env, so an env-var wrapper would not
+//      work; a shim file runs the same way on every platform.
 
 const RELATIVE_ENTRY = path.join("zcode-acp-server", "dist", "cli.js");
+const NODE_EXE = process.platform === "win32" ? "node.exe" : "node";
+const MIN_NODE_MAJOR = 22;
 
 interface GlobalInstall {
   nodeBin: string;
@@ -37,60 +48,179 @@ function compareVersionDirs(a: string, b: string): number {
   return 0;
 }
 
-function globalInstalls(): GlobalInstall[] {
-  const home = os.homedir();
-  const versionDirs: GlobalInstall[] = [];
-  const scans: Array<{ versions: string; binSub: string; libSub: string }> = [
+interface ScanSpec {
+  versions: string;
+  // relative dir under each version directory that holds the node binary
+  binSub: string[];
+  // relative dir under each version directory that holds global node_modules
+  libSub: string[];
+  exe: string;
+}
+
+function posixScans(home: string): ScanSpec[] {
+  return [
     {
       versions: path.join(home, "Library", "Application Support", "fnm", "node-versions"),
-      binSub: path.join("installation", "bin"),
-      libSub: path.join("installation", "lib", "node_modules"),
+      binSub: [path.join("installation", "bin")],
+      libSub: [path.join("installation", "lib", "node_modules")],
+      exe: "node",
     },
     {
       versions: path.join(home, ".nvm", "versions", "node"),
-      binSub: "bin",
-      libSub: path.join("lib", "node_modules"),
+      binSub: ["bin"],
+      libSub: [path.join("lib", "node_modules")],
+      exe: "node",
     },
     {
       versions: path.join(home, ".local", "share", "mise", "installs", "node"),
-      binSub: "bin",
-      libSub: path.join("lib", "node_modules"),
+      binSub: ["bin"],
+      libSub: [path.join("lib", "node_modules")],
+      exe: "node",
     },
   ];
-  for (const { versions, binSub, libSub } of scans) {
-    try {
-      const dirs = fs.readdirSync(versions).sort((a, b) => compareVersionDirs(b, a));
-      for (const version of dirs) {
-        versionDirs.push({
-          nodeBin: path.join(versions, version, binSub, "node"),
-          globalRoot: path.join(versions, version, libSub),
-          major: versionMajor(version),
-        });
-      }
-    } catch {
-      // layout not present on this machine
-    }
-  }
-  versionDirs.push(
-    { nodeBin: "/usr/local/bin/node", globalRoot: "/usr/local/lib/node_modules", major: 0 },
-    { nodeBin: "/opt/homebrew/bin/node", globalRoot: "/opt/homebrew/lib/node_modules", major: 0 },
-  );
-  return versionDirs;
 }
 
-const MIN_NODE_MAJOR = 22;
+function winScans(home: string, appdata: string): ScanSpec[] {
+  return [
+    {
+      // fnm on Windows: %APPDATA%\fnm\node-versions\<v>\installation
+      versions: path.join(appdata, "fnm", "node-versions"),
+      binSub: ["installation"],
+      libSub: [path.join("installation", "node_modules")],
+      exe: "node.exe",
+    },
+    {
+      // nvm-windows: %APPDATA%\nvm\<v>
+      versions: path.join(appdata, "nvm"),
+      binSub: [""],
+      libSub: ["node_modules"],
+      exe: "node.exe",
+    },
+    {
+      // scoop: %USERPROFILE%\scoop\apps\nodejs*\current
+      versions: path.join(home, "scoop", "apps"),
+      binSub: [path.join("current")],
+      libSub: [path.join("current", "node_modules")],
+      exe: "node.exe",
+    },
+  ];
+}
 
+function globalInstalls(): GlobalInstall[] {
+  const home = os.homedir();
+  const appdata = process.env.APPDATA ?? path.join(home, "AppData", "Roaming");
+  const programFiles = process.env["ProgramFiles"] ?? "C:\\Program Files";
+  const volta = path.join(appdata, "Volta");
+  const results: GlobalInstall[] = [];
+  const scans = process.platform === "win32" ? winScans(home, appdata) : posixScans(home);
+  for (const spec of scans) {
+    let dirs: string[];
+    try {
+      dirs = fs.readdirSync(spec.versions).sort((a, b) => compareVersionDirs(b, a));
+    } catch {
+      continue;
+    }
+    for (const version of dirs) {
+      for (const binSub of spec.binSub) {
+        const nodeBin = path.join(spec.versions, version, binSub, spec.exe);
+        if (!fs.existsSync(nodeBin)) continue;
+        const libSub = spec.libSub[spec.binSub.indexOf(binSub)] ?? "node_modules";
+        results.push({
+          nodeBin,
+          globalRoot: path.join(spec.versions, version, libSub),
+          major: versionMajor(version),
+        });
+        break;
+      }
+    }
+  }
+  // Single-location installs (no version-dir layout). probed for sqlite below.
+  const fixed =
+    process.platform === "win32"
+      ? [
+          { nodeBin: path.join(volta, "bin", "node.exe"), globalRoot: path.join(volta, "lib", "node_modules") },
+          { nodeBin: path.join(programFiles, "nodejs", "node.exe"), globalRoot: path.join(programFiles, "nodejs", "node_modules") },
+          { nodeBin: path.join(home, "AppData", "Local", "Volta", "bin", "node.exe"), globalRoot: path.join(home, "AppData", "Local", "Volta", "lib", "node_modules") },
+        ]
+      : [
+          { nodeBin: "/usr/local/bin/node", globalRoot: "/usr/local/lib/node_modules" },
+          { nodeBin: "/opt/homebrew/bin/node", globalRoot: "/opt/homebrew/lib/node_modules" },
+          { nodeBin: "/usr/bin/node", globalRoot: "/usr/lib/node_modules" },
+          { nodeBin: "/home/linuxbrew/.linuxbrew/bin/node", globalRoot: "/home/linuxbrew/.linuxbrew/lib/node_modules" },
+        ];
+  for (const entry of fixed) {
+    if (fs.existsSync(entry.nodeBin)) {
+      results.push({ ...entry, major: versionMajor(nodeVersionShort(entry.nodeBin) ?? "") });
+    }
+  }
+  return results;
+}
+
+const versionCache = new Map<string, string | null>();
+// Ask the binary itself so fixed-location installs get an accurate major,
+// independent of directory naming.
+function nodeVersionShort(nodeBin: string): string | null {
+  const hit = versionCache.get(nodeBin);
+  if (hit !== undefined) return hit;
+  let out: string | null = null;
+  try {
+    out = execFileSync(nodeBin, ["--version"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    out = null;
+  }
+  versionCache.set(nodeBin, out);
+  return out;
+}
+
+const sqliteCache = new Map<string, boolean>();
+// The bridge and the zcode backend both require node:sqlite (Node >= 22). A
+// real `--version`+require probe beats trusting directory names, and rejects
+// the Electron binary when the daemon is app-hosted.
+function sqliteCapable(nodeBin: string): boolean {
+  const hit = sqliteCache.get(nodeBin);
+  if (hit !== undefined) return hit;
+  let ok = false;
+  try {
+    execFileSync(nodeBin, ["-e", "require('node:sqlite'); require('node:worker_threads')"], {
+      timeout: 6000,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    ok = true;
+  } catch {
+    ok = false;
+  }
+  sqliteCache.set(nodeBin, ok);
+  return ok;
+}
+
+function capableNodeCandidates(): string[] {
+  const cands: string[] = [];
+  for (const install of globalInstalls()) {
+    if (install.major >= MIN_NODE_MAJOR || install.major === 0) cands.push(install.nodeBin);
+  }
+  // Also probe the ambient `node` (fnm/nvm/volta on PATH) last.
+  const whichNode = process.platform === "win32" ? "node.exe" : "node";
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!dir) continue;
+    const hit = path.join(dir, whichNode);
+    if (fs.existsSync(hit)) {
+      cands.push(hit);
+      break;
+    }
+  }
+  return [...new Set(cands)];
+}
+
+// Pick the node to run the bridge: prefer the one that owns the install the
+// bridge lives under, but only if it can actually load the bridge.
 function nodeForCli(cli: string): string {
-  for (const install of globalInstalls()) {
-    if (cli.startsWith(install.globalRoot + path.sep)) return install.nodeBin;
+  const paired = globalInstalls().find((i) => cli.startsWith(i.globalRoot + path.sep));
+  if (paired && sqliteCapable(paired.nodeBin)) return paired.nodeBin;
+  for (const c of capableNodeCandidates()) {
+    if (sqliteCapable(c)) return c;
   }
-  // Checkout-local copies have no owning global root. Pair them with the
-  // newest installed node >= 22 (the bridge uses node:sqlite and other
-  // post-22 APIs) instead of process.execPath, which is the Electron binary
-  // when the daemon is app-hosted and breaks the ACP handshake.
-  for (const install of globalInstalls()) {
-    if (install.major >= MIN_NODE_MAJOR && fs.existsSync(install.nodeBin)) return install.nodeBin;
-  }
+  // Last resort — the daemon's own node. This is the Electron binary when
+  // app-hosted; better than crashing the plugin load, and status() flags it.
   return process.execPath;
 }
 
@@ -112,67 +242,102 @@ function checkoutInstalls(): string[] {
   }
 }
 
-// The bridge injects the ZCode provider tables only when the CLI entry it
-// resolves ends in .cjs/.mjs/.js. Homebrew-style installs put an extensionless
-// symlink on PATH (`zcode` -> ZCode.app/…/glm/zcode.cjs), that check fails,
-// and the spawned backend dies at boot with "无法定位 CLI ZCode Built-in
-// Provider Config". Resolving the symlink and passing the real path as
-// ZCODE_BIN keeps the injection active. POSIX: wrap through /usr/bin/env so
-// no daemon config is needed; Windows users need the same value under
-// agents.providers.zcode.env.
+// Resolve the real ZCode CLI entry (a .cjs/.js file, not the extensionless
+// launcher on PATH) so the shim can point the bridge at it. Returns undefined
+// when nothing with a JS extension is found; the bridge then falls back to its
+// own discovery (native CLIs work fine; only app-bundle symlinks need this).
 function zcodeBinOverride(): string | undefined {
-  if (process.platform === "win32") return undefined;
+  if (process.env.ZCODE_BIN && fs.existsSync(process.env.ZCODE_BIN)) return process.env.ZCODE_BIN;
+  const names =
+    process.platform === "win32" ? ["zcode", "zcode.cmd", "zcode.exe"] : ["zcode"];
   for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
     if (!dir) continue;
-    const hit = path.join(dir, "zcode");
-    try {
-      if (!fs.existsSync(hit)) continue;
-      const real = fs.realpathSync(hit);
-      if (/\.(cjs|mjs|js)$/.test(real)) return real;
-    } catch {
-      // unreadable PATH segment
+    for (const name of names) {
+      const hit = path.join(dir, name);
+      try {
+        if (!fs.existsSync(hit)) continue;
+        const real = fs.realpathSync(hit);
+        if (/\.(cjs|mjs|js)$/.test(real)) return real;
+      } catch {
+        // unreadable PATH segment
+      }
     }
+  }
+  // The ZCode desktop bundle is the most common Windows entry and never lands
+  // on PATH. Mirror the bridge's own well-known candidates.
+  const home = os.homedir();
+  const bundled =
+    process.platform === "win32"
+      ? [path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "Programs", "ZCode", "resources", "glm", "zcode.cjs")]
+      : process.platform === "darwin"
+        ? ["/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs", path.join(home, "Applications/ZCode.app/Contents/Resources/glm/zcode.cjs")]
+        : [];
+  for (const c of bundled) {
+    if (fs.existsSync(c)) return c;
   }
   return undefined;
 }
 
+function launcherDir(): string {
+  return path.join(os.tmpdir(), "paseo-plugin-zcode-launch");
+}
+
+// Generate the `zcode-acp-server` shim. The bridge's entry guard keys off
+// basename(process.argv[1]) === "zcode-acp-server" to select stdio-server
+// mode, so the file must be named exactly that (no extension — Node runs an
+// extensionless argv target as CommonJS, which the macOS test confirmed). It
+// sets ZCODE_BIN/ZCODE_NODE then imports the real bridge entry.
+function buildLauncher(cli: string, zcodeBin: string | undefined): string {
+  const dir = launcherDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "zcode-acp-server");
+  const lines = [
+    "// generated by paseo-plugin-zcode — do not edit or invoke directly",
+    zcodeBin ? `process.env.ZCODE_BIN = ${JSON.stringify(zcodeBin)};` : "",
+    "process.env.ZCODE_NODE = process.execPath;",
+    `import(${JSON.stringify(pathToFileURL(cli).href)});`,
+  ].filter(Boolean);
+  fs.writeFileSync(file, lines.join("\n") + "\n", { mode: 0o755 });
+  return file;
+}
+
 interface Launch {
   command: readonly [string, ...string[]];
+  nodeBin: string;
+  bridgeCli: string;
   zcodeBin?: string;
 }
 
 function resolveLaunch(): Launch | undefined {
-  let inner: [string, string] | undefined;
-  for (const cli of checkoutInstalls()) {
-    inner = [nodeForCli(cli), cli];
-    break;
+  let bridgeCli: string | undefined;
+  const prefer = checkoutInstalls();
+  if (prefer.length) {
+    bridgeCli = prefer[0];
   }
-  if (!inner) {
+  if (!bridgeCli) {
     // When the daemon shares a node install with the bridge (CLI-hosted case),
     // the worker script's ancestor chain covers the global install directory.
     try {
       const { createRequire } = require("node:module");
-      const cli = createRequire(process.argv[1]).resolve("zcode-acp-server/dist/cli.js");
-      inner = [nodeForCli(cli), cli];
+      bridgeCli = createRequire(process.argv[1]).resolve("zcode-acp-server/dist/cli.js");
     } catch {
       // fall through to the well-known roots scan
     }
   }
-  if (!inner) {
+  if (!bridgeCli) {
     for (const install of globalInstalls()) {
       const cli = path.join(install.globalRoot, RELATIVE_ENTRY);
       if (fs.existsSync(cli)) {
-        inner = [install.nodeBin, cli];
+        bridgeCli = cli;
         break;
       }
     }
   }
-  if (!inner) return undefined;
+  if (!bridgeCli) return undefined;
+  const nodeBin = nodeForCli(bridgeCli);
   const zcodeBin = zcodeBinOverride();
-  if (zcodeBin) {
-    return { command: ["/usr/bin/env", `ZCODE_BIN=${zcodeBin}`, inner[0], inner[1]], zcodeBin };
-  }
-  return { command: inner };
+  const launcher = buildLauncher(bridgeCli, zcodeBin);
+  return { command: [nodeBin, launcher], nodeBin, bridgeCli, zcodeBin };
 }
 
 const NOT_FOUND =
@@ -228,27 +393,25 @@ export default function contribute(server: PluginServerContext) {
       const command: readonly string[] = request?.launch
         ? [request.launch.command, ...request.launch.args]
         : launch?.command ?? [];
-      // Accept both launch shapes: [node, cli.js] and
-      // [/usr/bin/env, ZCODE_BIN=…, node, cli.js].
-      const cliPath = command.filter((arg) => arg.endsWith(".js")).pop();
-      if (!cliPath || !fs.existsSync(cliPath)) {
-        return { available: false, diagnostic: NOT_FOUND };
-      }
-      const nodeBin = command[command.indexOf(cliPath) - 1];
+      const nodeBin = command[0];
+      if (!nodeBin) return { available: false, diagnostic: NOT_FOUND };
       const major = await nodeMajor(nodeBin);
-      const version = bridgeVersion(cliPath);
+      const version = launch ? bridgeVersion(launch.bridgeCli) : undefined;
       if (major !== undefined && major < MIN_NODE_MAJOR) {
         return {
           available: false,
           diagnostic: `zcode-acp-server needs Node >= ${MIN_NODE_MAJOR}, but ${nodeBin} is v${major}.x`,
         };
       }
-      if (!command.some((arg) => arg.startsWith("ZCODE_BIN="))) {
+      if (!launch) return { available: false, diagnostic: NOT_FOUND };
+      if (!launch.zcodeBin && process.platform !== "linux") {
+        // Only the app-bundle symlink layout needs ZCODE_BIN; native-CLI Linux
+        // installs resolve it themselves.
         return {
           available: true,
           diagnostic:
-            `zcode-acp-server ${version ?? "?"} via ${nodeBin}; ZCode CLI not found on PATH — ` +
-            "if sessions die with 'built-in provider config' errors, set agents.providers.zcode.env.ZCODE_BIN to zcode.cjs",
+            `zcode-acp-server ${version ?? "?"} via ${nodeBin}; ZCode CLI not detected — ` +
+            "if sessions die at boot, set agents.providers.zcode.env.ZCODE_BIN to zcode.cjs",
         };
       }
       return { available: true, diagnostic: `zcode-acp-server ${version ?? "?"} via ${nodeBin}` };
