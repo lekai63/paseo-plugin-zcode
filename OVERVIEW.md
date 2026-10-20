@@ -42,8 +42,15 @@ app or CLI ≥ 0.14.8) installed and signed in; plugins enabled
    exactly one of those two official hosts**; for any other provider
    (custom gateways, self-hosted or local endpoints) the card reports
    `unavailable` without contacting the network, so a third-party key is never
-   attached to an official endpoint. Nothing is sent anywhere else; no
-   telemetry.
+   attached to an official endpoint. The plugin sends nothing else and has no
+   telemetry of its own.
+
+The bridge this plugin launches has two network behaviors of its own, both
+inherited from `zcode-acp-server` and independent of this plugin:
+it makes one anonymous workflow-config request carrying only platform and
+version information, and it can run a remote-access mode (a relay for phone and
+web clients) that stays **off** unless you explicitly configure it with a token.
+Neither is enabled or triggered by this plugin.
 
 Unofficial integration; not affiliated with or endorsed by Zhipu AI / Z.ai.
 
