@@ -4,10 +4,15 @@
 
 A [Paseo](https://paseo.sh) provider plugin that registers **ZCode** (Z.ai's coding agent, backed by GLM) as an agent backend. It wraps the community [zcode-acp-server](https://github.com/william0wang/zcode-acp) ACP bridge with Paseo's `runAcpProvider()` shim — models, modes, permissions, steering and session resume come through the standard ACP capability mapping. The dependency is our maintained fork [lekai63/zcode-acp](https://github.com/lekai63/zcode-acp) (`paseo` branch: upstream plus the endpoint-origin fix).
 
+> **Unofficial integration.** Not affiliated with or endorsed by Zhipu AI / Z.ai.
+
 ## Prerequisites
 
 - **Paseo >= 0.11.0** (daemon-resolved provider launch, provider `status`, and usage sources; use plugin v0.4.x on Paseo 0.8–0.10)
+- **Node.js >= 22** on the daemon host — the bridge reads ZCode's sqlite databases via `node:sqlite`
+- ZCode installed and signed in (desktop app or CLI); credentials come from `~/.zcode/v2/config.json`
 - Plugins enabled on the daemon: root-level `"pluginsEnabled": true` in `~/.paseo/config.json`, then `paseo reload`
+- npm + network on the daemon host, needed during `add`/`update` to install the bridge
 
 The bridge installs itself: on `paseo plugin add` / `update`, the manifest `build` runs `npm ci --omit=dev --allow-git=all` inside the managed checkout, pulling the bridge from `git+https://github.com/lekai63/zcode-acp.git#paseo` per the committed lockfile. The checkout-local copy (`checkout/node_modules/zcode-acp-server`) is authoritative; a global install (`npm i -g zcode-acp-server`) is only a fallback.
 
@@ -16,8 +21,9 @@ The bridge installs itself: on `paseo plugin add` / `update`, the manifest `buil
 ## Install
 
 ```bash
-paseo plugin add lianxin255/paseo-plugin-zcode
+paseo plugin add lekai63/paseo-plugin-zcode
 paseo plugin ls        # expect paseo-plugin-zcode = running
+paseo provider diagnostic zcode-acp   # expect Status Ready, model list
 ```
 
 Then run agents as usual:
@@ -25,6 +31,8 @@ Then run agents as usual:
 ```bash
 paseo run --provider zcode-acp "Fix the failing test"
 ```
+
+The first run installs the bridge and warms up ZCode's skill/plugin discovery, so the very first session can take a minute or two; the ACP handshake window is 180 s.
 
 ## Usage source
 
@@ -41,6 +49,11 @@ config path and provider id, and the report inputs carry only that store
 locator — `fetch` re-reads the apiKey on every call, and the daemon caches
 reports for five minutes. Session-scoped discovery resolves `ZCODE_HOME` /
 `ZCODE_PROVIDER` from the zcode session's own launch environment.
+
+A key is only attached when the provider's baseURL is exactly one of the two
+official quota hosts over https (`api.z.ai`, `open.bigmodel.cn`); any other
+baseURL — a custom gateway, a local endpoint — reports `unavailable` with zero
+requests, so its key never leaves for quota.
 
 ## Settings screens
 
@@ -78,9 +91,13 @@ card** the ACP stream already created instead of adding a second row; the
 `Agent`/`Task` card simply becomes the sub-agent card. Editors that do not
 understand the vendor method ignore it, so Zed/Martty behaviour is unchanged.
 
-## Upgrade the bridge
+## Upgrading
 
-The bridge is pinned to a commit of `lekai63/zcode-acp` (see `package-lock.json`). To upgrade, sync upstream on the fork's `paseo` branch, make the changes there, then update this repo's dependency ref and lockfile.
+```bash
+paseo plugin update paseo-plugin-zcode
+```
+
+This re-checks out `main`, re-runs `npm ci --omit=dev --allow-git=all`, and reloads. New bridge versions flow through the fork: sync upstream on [lekai63/zcode-acp](https://github.com/lekai63/zcode-acp)'s `paseo` branch, then update this repo's dependency ref in `package.json`, regenerate the lockfile, and tag a release. A globally installed bridge (`npm i -g zcode-acp-server`) is honored as a fallback, but the checkout-local copy always takes precedence so the bridge version stays pinned to a plugin release.
 
 ## Vendored ACP adapter (steer support, resume fix, history release)
 
@@ -96,9 +113,41 @@ Upstream files are otherwise untouched apart from import paths and one construct
 
 ## How the bridge is resolved
 
-Paseo evaluates plugin bundles with an injected `require` and no `__dirname`/`import.meta`, and the daemon can be hosted either by a node CLI install or by the desktop app (Electron). The plugin **prefers** the checkout-local copy `checkout/node_modules/zcode-acp-server/dist/cli.js` (paired with that checkout's `node`), and only falls back to the well-known npm global roots — fnm, nvm, `/usr/local`, Homebrew — when the checkout is missing. Nothing depends on `PATH`, so the provider works no matter how the daemon was started, and the bridge never launches through an Electron binary. If no install is found at all, the provider falls back to `zcode-acp-server` on `PATH`, and the daemon reports the miss as the provider's diagnostic (`paseo provider diagnostic zcode`) instead of the plugin failing to load.
+Paseo evaluates plugin bundles with an injected `require` and no `__dirname`/`import.meta`, and the daemon can be hosted either by a node CLI install or by the desktop app (Electron). The plugin **prefers** the checkout-local copy `checkout/node_modules/zcode-acp-server/dist/cli.js` (paired with that checkout's `node`), and only falls back to the well-known npm global roots — fnm, nvm, `/usr/local`, Homebrew — when the checkout is missing. Nothing depends on `PATH`, so the provider works no matter how the daemon was started, and the bridge never launches through an Electron binary. If no install is found at all, the provider falls back to `zcode-acp-server` on `PATH`, and the daemon reports the miss as the provider's diagnostic (`paseo provider diagnostic zcode-acp`) instead of the plugin failing to load.
 
-The resolved `[node, cli.js]` pair is the provider's declared default `command`. The daemon resolves the effective launch from it — applying any `agents.providers.zcode` overrides — and the adapter spawns exactly that launch with the daemon's sanitized environment plus the per-session env. The provider's `status` additionally checks that the bridge script exists, since the daemon only verifies the `node` executable.
+The resolved `[node, cli.js]` pair is the provider's declared default `command`. The daemon resolves the effective launch from it — applying any `agents.providers.zcode-acp` overrides — and the adapter spawns exactly that launch with the daemon's sanitized environment plus the per-session env. The provider's `status` additionally checks that the bridge script exists, since the daemon only verifies the `node` executable. The bridge then resolves the real ZCode CLI itself (`zcode` on PATH, realpathed to its `.cjs`/`.js` entry, or the desktop-app bundle locations) and injects the provider-table env the CLI needs to boot.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `paseo plugin ls` shows an error | `paseo plugin logs paseo-plugin-zcode`; usually Node < 22, or npm unavailable (or refusing git deps) during the build step |
+| `Failed to create agent: Internal error` | the ZCode backend died at boot. Check the bridge diary `~/.zcode/cli/log/zcode-acp-<date>.log`; if it says `无法定位 CLI ZCode Built-in Provider Config`, set `agents.providers.zcode-acp.env.ZCODE_BIN` to the full path of the real `zcode.cjs` |
+| status: `zcode-acp-server bridge not found` | `paseo plugin update` to re-install the bridge, or `npm i -g zcode-acp-server` |
+| status shows a too-old Node | install Node ≥ 22 on the daemon host, or point `agents.providers.zcode-acp.command` at a specific node binary |
+| Usage card shows `the active ZCode provider is not an official Z.ai/BigModel endpoint` | expected: the active provider is a gateway/custom endpoint, and the quota key is only ever sent to the official hosts. Sign into a Coding Plan account to populate the card |
+| Usage card shows `No GLM Coding Plan quota reported` | the account is not on a Coding Plan (e.g. Start Plan, or keyless after a plan change); the official quota API has nothing to report |
+| first session slow, later ones fine | expected warm-up (bridge install + skill discovery) |
+
+`paseo provider diagnostic zcode-acp` always shows the exact bridge version and node binary the plugin will launch.
+
+## Configuration
+
+Nothing to configure when ZCode is at a default location: `/Applications/ZCode.app` (macOS), `%LOCALAPPDATA%\Programs\ZCode` (Windows), or a `zcode` entry on `PATH` that resolves to a `.cjs`/`.js` file. For custom layouts, use the provider entry in `~/.paseo/config.json`:
+
+```json
+{
+  "agents": {
+    "providers": {
+      "zcode-acp": {
+        "env": { "ZCODE_BIN": "D:\\Tools\\ZCode\\resources\\glm\\zcode.cjs" }
+      }
+    }
+  }
+}
+```
+
+`command` overrides (replace/append) for the bridge launch are also applied by the daemon. Run `paseo reload` after editing.
 
 ## Notes & limitations
 
@@ -106,6 +155,14 @@ The resolved `[node, cli.js]` pair is the provider's declared default `command`.
 - The first bridge start can take a while (npm warm-up); the plugin allows 180 s for the ACP handshake.
 - The icon is Z.ai's official logo mark (source: `z-cdn.chatglm.cn/z-ai/static/logo.svg`), used nominatively to indicate which agent this plugin wraps. Not affiliated with or endorsed by Zhipu AI.
 
+## Development
+
+- `index.server.ts` registers the provider and every settings/usage surface; `server/` holds the launch resolution, quota reader, settings/account screens, sub-agent and subsession plumbing, and the vendored ACP adapter. `index.client.tsx` + `client/` are the settings screens.
+- `npm run typecheck` — checks against `@getpaseo/plugin` (a devDependency; the host provides it at runtime).
+- `npm test` — unit tests on Node's built-in runner, no network.
+- `npm run smoke` — drives a real registration + ACP handshake through the plugin (status probe, bridge handshake, usage discover+fetch).
+- `main` is what `paseo plugin add` tracks; releases are git tags.
+
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) for this plugin. The bridge it installs (`zcode-acp-server`, from the [lekai63/zcode-acp](https://github.com/lekai63/zcode-acp) fork) ships under its own Apache-2.0 license. The icon is Z.ai's logo mark, used nominatively to indicate which agent this plugin wraps.

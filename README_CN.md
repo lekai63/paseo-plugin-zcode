@@ -4,10 +4,15 @@
 
 一个 [Paseo](https://paseo.sh) 的 provider 插件，把 **ZCode**（智谱 Z.ai 的编码 agent，GLM 驱动）注册为 agent 后端。内部用 Paseo 的 `runAcpProvider()` 包装社区桥 [zcode-acp-server](https://github.com/william0wang/zcode-acp)——模型、模式、权限、插话（steering）和续话都走标准 ACP 能力映射。依赖的是我们维护的 fork [lekai63/zcode-acp](https://github.com/lekai63/zcode-acp)（`paseo` 分支，上游 + 端点 origin 修复）。
 
+> **非官方集成**，与智谱 AI / Z.ai 无隶属或背书关系。
+
 ## 前置条件
 
 - **Paseo >= 0.11.0**（依赖 daemon 解析的 provider 启动命令、provider `status` 与 usage source；Paseo 0.8–0.10 请使用插件 v0.4.x）
+- **Node.js >= 22**（daemon 主机）——桥通过 `node:sqlite` 读取 ZCode 的 sqlite 数据库
+- 已安装并登录 ZCode（桌面 App 或 CLI）；凭证读自 `~/.zcode/v2/config.json`
 - daemon 开启插件：`~/.paseo/config.json` 根级 `"pluginsEnabled": true`，然后 `paseo reload`
+- daemon 主机可用 npm 且能联网（`add`/`update` 时安装桥）
 
 桥会自动安装：`paseo plugin add` / `update` 时，manifest 的 `build` 会在托管检出目录里执行 `npm ci --omit=dev --allow-git=all`，按仓库锁文件从 `git+https://github.com/lekai63/zcode-acp.git#paseo` 拉取桥。检出内副本（`checkout/node_modules/zcode-acp-server`）是权威版本；全局安装（`npm i -g zcode-acp-server`）只作为回退。
 
@@ -16,21 +21,26 @@
 ## 安装
 
 ```bash
-paseo plugin add lianxin255/paseo-plugin-zcode
-paseo plugin ls        # 期望 paseo-plugin-zcode = running
+paseo plugin add lekai63/paseo-plugin-zcode
+paseo plugin ls                   # 期望：paseo-plugin-zcode  running
+paseo provider diagnostic zcode-acp   # 期望：Status Ready，并列出模型
 ```
 
-然后正常派活：
+之后照常派活：
 
 ```bash
 paseo run --provider zcode-acp "修复失败的测试"
 ```
+
+首次运行要安装桥并预热 ZCode 的 skill/plugin 发现，所以第一个会话可能耗时一两分钟；ACP 握手窗口放宽到 180 秒。
 
 ## 用量来源（usage source）
 
 server 入口注册了一个 `zcode-acp` **usage source**（usage source 的 id 在整个 daemon 内唯一），GLM Coding Plan 配额会出现在 Paseo 的 Usage 弹窗和侧边栏用量里，与内置来源并列（5h 和 weekly 为摘要窗口，MCP 显示在卡片中）。数据来自 ZCode 桌面端同款接口 `/api/monitor/usage/quota/limit`，读取 `~/.zcode/v2/config.json` 中当前启用 provider 的 apiKey（第一个 enabled 的 provider，或被 `ZCODE_PROVIDER` 指定的那个，与桥的选取规则一致；`ZCODE_HOME` 会替换 `~/.zcode`）。
 
 账号即该 provider（`ZCode · <provider>`），账号 key 是配置路径 + provider id 的哈希，上报的 input 只包含这个存储定位符——`fetch` 每次都重新读取 apiKey，daemon 会把报告缓存五分钟。会话级发现会从该 zcode 会话自己的启动环境里解析 `ZCODE_HOME` / `ZCODE_PROVIDER`。
+
+只有当 provider 的 baseURL 严格等于两个官方 https 配额主机之一（`api.z.ai`、`open.bigmodel.cn`）时才会携带 key 发起请求；其他 baseURL（自定义网关、本地端点）直接上报 `unavailable`，一次请求都不发，key 绝不会为查配额而外发。
 
 ## 设置页面
 
@@ -58,9 +68,13 @@ server 入口注册了一个 `zcode-acp` **usage source**（usage source 的 id 
 
 卡片复用派发那一次的 tool call id，因此会**与 ACP 流里已有的 `Agent` 卡片合并**，而不是多出一行——那张 `Agent`/`Task` 卡片直接变成子代理卡片。不认识该 vendor 方法的编辑器会忽略它，Zed/Martty 的行为不变。
 
-## 升级桥
+## 升级
 
-桥锁定在 `lekai63/zcode-acp` 的提交（见 `package-lock.json`）。要升级：在 fork 的 `paseo` 分支上同步上游并修改，然后更新本仓库的依赖 ref 与锁文件。
+```bash
+paseo plugin update paseo-plugin-zcode
+```
+
+该命令会重新拉取 `main`、重跑 `npm ci --omit=dev --allow-git=all` 并重载插件。想跟进更新的桥版本：在 [lekai63/zcode-acp](https://github.com/lekai63/zcode-acp) 的 `paseo` 分支上同步上游并修改，然后更新本仓库 `package.json` 里的依赖 ref、重新生成锁文件、打个 tag。全局安装的桥（`npm i -g zcode-acp-server`）作为兜底会被采纳，但检出内副本始终优先——这样桥版本与插件发布版本保持钉定。
 
 ## 内置(vendored)ACP 适配层：steer 支持、恢复修复与历史会话释放
 
@@ -74,18 +88,58 @@ fork 的行为是"转向"而非拒绝：`delivery: "steer"` 的 prompt 复用运
 
 除 import 路径与一处构造器参数属性展开（Node type-stripping 只支持可擦除语法）外，其余与上游一致。升级 `@getpaseo/plugin` 时，请 diff 对应 tag 的两个源文件与本地拷贝，按 `Local change vs upstream` 标记重新套用。`server/acp-adapter.test.ts` 用假 agent 覆盖了两条 steer 路径（引导与抢占回退）、恢复会话的历史回放，以及历史会话的停放。
 
-## 桥的解析机制
+## 桥的解析方式
 
-Paseo 以注入 `require`、无 `__dirname`/`import.meta` 的方式执行插件 bundle，且 daemon 可能由 node CLI 安装或桌面 app（Electron）托管。插件**优先**使用检出内的桥副本 `checkout/node_modules/zcode-acp-server/dist/cli.js`（配对该检出所用的 `node`），只有在检出缺失时才回退到常见 npm 全局根目录（fnm、nvm、`/usr/local`、Homebrew）。全程不依赖 `PATH`，桥也永远不会经由 Electron 二进制启动。若完全找不到安装，provider 会回退为 `PATH` 上的 `zcode-acp-server`，由 daemon 把"找不到"作为 provider 诊断信息报告（`paseo provider diagnostic zcode`），而不是让整个插件加载失败。
+Paseo 以注入 `require`、无 `__dirname`/`import.meta` 的方式执行插件 bundle，且 daemon 可能由 node CLI 安装或桌面 app（Electron）托管。插件**优先**使用检出内的桥副本 `checkout/node_modules/zcode-acp-server/dist/cli.js`（配对该检出所用的 `node`），只有在检出缺失时才回退到常见 npm 全局根目录（fnm、nvm、`/usr/local`、Homebrew）。全程不依赖 `PATH`，桥也永远不会经由 Electron 二进制启动。若完全找不到安装，provider 会回退为 `PATH` 上的 `zcode-acp-server`，由 daemon 把"找不到"作为 provider 诊断信息报告（`paseo provider diagnostic zcode-acp`），而不是让整个插件加载失败。
 
-解析出的 `[node, cli.js]` 是 provider 声明的默认 `command`。daemon 据此解析实际启动命令（并套用 `agents.providers.zcode` 中的覆盖项），适配层严格按该命令启动，环境为 daemon 净化后的环境再叠加会话级 env。由于 daemon 只校验 `node` 可执行文件，provider 的 `status` 会额外检查桥脚本是否存在。
+解析出的 `[node, cli.js]` 是 provider 声明的默认 `command`。daemon 据此解析实际启动命令（并套用 `agents.providers.zcode-acp` 中的覆盖项），适配层严格按该命令启动，环境为 daemon 净化后的环境再叠加会话级 env。由于 daemon 只校验 `node` 可执行文件，provider 的 `status` 会额外检查桥脚本是否存在。真正的 ZCode CLI 由桥自己解析（`PATH` 上的 `zcode`、realpath 到 `.cjs`/`.js` 入口，或桌面 App bundle 位置），并注入 CLI 引导所需的 provider 表 env。
 
-## 已知限制
+## 故障排查
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| `paseo plugin ls` 报 error | 看 `paseo plugin logs paseo-plugin-zcode`；通常是 Node 低于 22，或构建阶段 npm 不可用/拒绝 git 依赖 |
+| `Failed to create agent: Internal error` | ZCode backend 启动即死。先查桥日记 `~/.zcode/cli/log/zcode-acp-<date>.log`；若出现 `无法定位 CLI ZCode Built-in Provider Config`，把 `agents.providers.zcode-acp.env.ZCODE_BIN` 指向真实 `zcode.cjs` 的完整路径 |
+| 状态提示 `zcode-acp-server bridge not found` | 执行 `paseo plugin update` 重装桥，或 `npm i -g zcode-acp-server` |
+| 状态提示 node 版本过旧 | 在 daemon 主机装 Node ≥ 22，或用 `agents.providers.zcode-acp.command` 指定某个 node 二进制 |
+| 用量卡显示 `the active ZCode provider is not an official Z.ai/BigModel endpoint` | 属预期：当前激活的是网关/自定义端点，配额 key 只发往官方主机。登录 Coding Plan 账号后卡片就会有数据 |
+| 用量卡显示 `No GLM Coding Plan quota reported` | 账号不在 Coding Plan 上（如 Start Plan，或改套餐后无密钥）；官方配额接口查不到该账号 |
+| 只有第一次会话特别慢 | 属正常预热（安装桥 + skill 发现） |
+
+`paseo provider diagnostic zcode-acp` 会显示插件实际将用于启动桥的 node 二进制与桥版本。
+
+## 配置
+
+ZCode 装在默认位置时无需任何配置：`/Applications/ZCode.app`（macOS）、`%LOCALAPPDATA%\Programs\ZCode`（Windows），或 `PATH` 上能解析到 `.cjs`/`.js` 文件的 `zcode` 入口。非标准布局用 `~/.paseo/config.json` 的 provider 条目：
+
+```json
+{
+  "agents": {
+    "providers": {
+      "zcode-acp": {
+        "env": { "ZCODE_BIN": "D:\\Tools\\ZCode\\resources\\glm\\zcode.cjs" }
+      }
+    }
+  }
+}
+```
+
+daemon 同样支持对桥启动做 `command` 覆盖（replace / append 两种模式）。改完记得 `paseo reload`。
+
+## 说明与限制
 
 - provider id 为 `zcode-acp`（显示名 "ZCode (ACP)"）；`zcode` 这个 id 留给直接驱动 ZCode Services Server 的 provider，两者可以装在同一个 daemon 上。改名前创建的 agent 记录里 provider 是 `zcode`，需要在 daemon 的 agent 记录里迁移为 `zcode-acp`。`~/.paseo/config.json` 中**不带** `extends` 的 `agents.providers.zcode-acp` 条目会定制本插件的 provider（`enabled`、`command`、`env`、名称、模型）；**带** `extends` 的条目则定义一个独立 provider 并遮蔽本插件。
 - 桥首次启动可能较慢（npm 预热），插件为 ACP 握手预留了 180 秒。
 - 图标为 Z.ai 官方 logo（来源：`z-cdn.chatglm.cn/z-ai/static/logo.svg`），仅用于指示本插件所包装的 agent。与智谱 AI 无隶属或背书关系。
 
+## 开发
+
+- `index.server.ts` 注册 provider 与全部设置/用量入口；`server/` 下是启动解析、配额读取、设置/账号页面、子代理与子会话逻辑，以及内置 ACP 适配层；`index.client.tsx` + `client/` 是设置界面。
+- `npm run typecheck` —— 对着 `@getpaseo/plugin`（devDependency，运行时由宿主提供）做类型检查。
+- `npm test` —— Node 内置测试跑单元测试，不联网。
+- `npm run smoke` —— 通过插件驱动一次真实注册 + ACP 握手（status 探测、桥握手、用量 discover+fetch）。
+- `main` 是 `paseo plugin add` 跟踪的分支；发布以 git tag 标记。
+
 ## 许可证
 
-[MIT](LICENSE)
+本插件采用 [MIT](LICENSE)。它安装的桥（`zcode-acp-server`，来自 [lekai63/zcode-acp](https://github.com/lekai63/zcode-acp) fork）遵循其自身的 Apache-2.0 许可证。图标取自 Z.ai 官方 logo，仅用于指示本插件包装的是哪个 agent。

@@ -32,6 +32,7 @@ import { z } from "zod";
 
 import {
   loadActiveProvider,
+  NO_OFFICIAL_QUOTA_HOST,
   NO_QUOTA_WINDOWS,
   readZcodeQuota,
   zcodeLoginFromEnv,
@@ -125,6 +126,12 @@ export function toUsageReport({ snapshot, httpStatus }: QuotaReading): UsageRepo
     default:
       if (snapshot.error === NO_QUOTA_WINDOWS) {
         return unavailable({ kind: "no_quota", detail: "No GLM Coding Plan quota reported" });
+      }
+      if (snapshot.error === NO_OFFICIAL_QUOTA_HOST) {
+        return unavailable({
+          kind: "no_quota",
+          detail: "the active ZCode provider is not an official Z.ai/BigModel endpoint",
+        });
       }
       return { status: "error", error: snapshot.error ?? "GLM quota unavailable" };
   }

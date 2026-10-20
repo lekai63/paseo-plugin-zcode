@@ -13,7 +13,12 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { NO_QUOTA_WINDOWS, type ZcodeQuotaSnapshot } from "./quota.ts";
+import {
+  NO_OFFICIAL_QUOTA_HOST,
+  NO_QUOTA_WINDOWS,
+  readZcodeQuota,
+  type ZcodeQuotaSnapshot,
+} from "./quota.ts";
 import { createZcodeUsageSource, toUsageReport } from "./usage.ts";
 
 function zcodeHome(providers: Record<string, unknown>): string {
@@ -199,8 +204,50 @@ test("failure snapshots map to usage problems and errors", () => {
   assert.deepEqual(
     toUsageReport({
       httpStatus: null,
+      snapshot: snapshot({ status: "unavailable", error: NO_OFFICIAL_QUOTA_HOST }),
+    }),
+    {
+      status: "unavailable",
+      problem: {
+        kind: "no_quota",
+        detail: "the active ZCode provider is not an official Z.ai/BigModel endpoint",
+      },
+    },
+  );
+  assert.deepEqual(
+    toUsageReport({
+      httpStatus: null,
       snapshot: snapshot({ status: "unavailable", error: "socket hang up" }),
     }),
     { status: "error", error: "socket hang up" },
   );
+});
+
+test("a non-official provider baseURL sends no quota request at all", async () => {
+  const home = zcodeHome({
+    "custom:gateway": {
+      enabled: true,
+      options: { baseURL: "https://gateway.internal/api/anthropic", apiKey: "gateway-key" },
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => {
+    throw new Error("quota must not be requested for a non-official host");
+  };
+  try {
+    const reading = await readZcodeQuota({ configPath: path.join(home, "v2", "config.json") });
+    assert.equal(reading.httpStatus, null);
+    assert.equal(reading.snapshot.status, "unavailable");
+    assert.equal(reading.snapshot.error, NO_OFFICIAL_QUOTA_HOST);
+    assert.deepEqual(toUsageReport(reading), {
+      status: "unavailable",
+      problem: {
+        kind: "no_quota",
+        detail: "the active ZCode provider is not an official Z.ai/BigModel endpoint",
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });

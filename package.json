@@ -1,6 +1,9 @@
 {
   "name": "paseo-plugin-zcode",
   "version": "0.5.2",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "devDependencies": {
     "@getpaseo/plugin": "0.11.2",
     "@types/node": "^26.5.0",
@@ -11,7 +14,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test server/*.test.ts"
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test server/*.test.ts",
+    "smoke": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/smoke.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",

@@ -10,6 +10,11 @@ import path from "node:path";
  * deployment's `/api/monitor/usage/quota/limit` endpoint. Keeping the lookup
  * here (rather than importing zcode-acp-server internals) keeps the plugin
  * bundle independent of the bridge's dist layout.
+ *
+ * The quota endpoint belongs to Z.ai/BigModel only, so a key is attached only
+ * when the provider's baseURL is exactly one of the two official hosts over
+ * https (upstream v0.3.5): any other baseURL — a custom gateway, a local
+ * endpoint — yields zero requests, and the key never leaves for quota.
  */
 
 const QUOTA_PATH = "/api/monitor/usage/quota/limit";
@@ -112,9 +117,24 @@ export function loadActiveProvider(login: ZcodeLogin): ActiveProvider | null {
   return null;
 }
 
-/** Intl deployments answer on api.z.ai; everything else uses the CN host. */
-function quotaHost(baseURL: string): string {
-  return baseURL.includes("api.z.ai") ? HOST_INTL : HOST_CN;
+/**
+ * The official quota host for a provider baseURL, or undefined for anything
+ * else. Accept exactly the two official hostnames over https with no port —
+ * a substring match would let lookalike hosts (`…api.z.ai.example.com`) or
+ * plain-http URLs capture a key; the API path in the baseURL is irrelevant.
+ */
+function officialQuotaHost(baseURL: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(baseURL);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "https:" || url.port) return undefined;
+  const host = url.hostname.toLowerCase();
+  if (host === "api.z.ai") return HOST_INTL;
+  if (host === "open.bigmodel.cn") return HOST_CN;
+  return undefined;
 }
 
 function asFiniteNumber(value: unknown): number | null {
@@ -220,6 +240,9 @@ interface QuotaEnvelope {
 /** `error` of an `unavailable` snapshot whose plan reports no quota windows. */
 export const NO_QUOTA_WINDOWS = "quota API returned no usable windows";
 
+/** `error` of an `unavailable` snapshot whose provider is not an official endpoint. */
+export const NO_OFFICIAL_QUOTA_HOST = "active provider is not an official Z.ai/BigModel endpoint";
+
 export async function readZcodeQuota(login: ZcodeLogin): Promise<QuotaReading> {
   const base: ZcodeQuotaSnapshot = {
     status: "unavailable",
@@ -235,7 +258,12 @@ export async function readZcodeQuota(login: ZcodeLogin): Promise<QuotaReading> {
     return { snapshot: { ...base, error: `no apiKey found in ${login.configPath}` }, httpStatus: null };
   }
 
-  const host = quotaHost(provider.baseURL);
+  // No official host — a custom gateway/local endpoint account: report
+  // unavailable WITHOUT sending anything (its key never leaves for quota).
+  const host = officialQuotaHost(provider.baseURL);
+  if (!host) {
+    return { snapshot: { ...base, error: NO_OFFICIAL_QUOTA_HOST }, httpStatus: null };
+  }
   let status: number;
   let text: string;
   const controller = new AbortController();
