@@ -95,12 +95,34 @@ function configPath(): string {
 interface Account {
   providerId: string;
   apiKey: string;
-  baseURL: string;
+  // Set only for providers whose baseURL is an official quota host.
+  quotaHost?: string;
 }
 
-// Pick the active provider the same way the bridge does: an explicit
-// ZCODE_PROVIDER pin, else the first enabled provider that carries an API key
-// (keyless builtins would inject an empty key and fail every call).
+// The quota endpoint belongs to Z.ai/BigModel only. Accept exactly the two
+// official hosts over https (the API path in the provider baseURL is
+// irrelevant). Any other baseURL — a custom gateway, a local endpoint —
+// yields nothing, so its key can never be attached to this request.
+function officialQuotaHost(baseURL: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(baseURL);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "https:" || url.port) return undefined;
+  const host = url.hostname.toLowerCase();
+  if (host === "api.z.ai") return HOST_INTL;
+  if (host === "open.bigmodel.cn") return HOST_CN;
+  return undefined;
+}
+
+// Pick the account to report. An explicit ZCODE_PROVIDER pin is honored
+// exactly (a pinned custom provider only ever reports unavailable, never
+// falls back to another account). Without a pin, prefer the first enabled,
+// key-carrying provider on an official host — gateway users who also hold a
+// Coding Plan still see its card; custom-only users get the candidate for
+// the no-request unavailable path.
 function activeAccount(): Account | undefined {
   let cfg: unknown;
   try {
@@ -110,6 +132,7 @@ function activeAccount(): Account | undefined {
   }
   const providers = (cfg as { provider?: Record<string, unknown> })?.provider ?? {};
   const pinned = process.env.ZCODE_PROVIDER?.trim();
+  let fallback: Account | undefined;
   for (const [id, raw] of Object.entries(providers)) {
     if (pinned && id !== pinned) continue;
     const p = raw as {
@@ -117,29 +140,31 @@ function activeAccount(): Account | undefined {
       options?: { apiKey?: unknown; baseURL?: unknown };
     };
     const apiKey = typeof p?.options?.apiKey === "string" ? p.options.apiKey : "";
-    if (p?.enabled === true && apiKey) {
-      return {
-        providerId: id,
-        apiKey,
-        baseURL: typeof p.options?.baseURL === "string" ? p.options.baseURL : "",
-      };
-    }
+    const baseURL = typeof p?.options?.baseURL === "string" ? p.options.baseURL : "";
+    if (p?.enabled !== true || !apiKey) continue;
+    const quotaHost = officialQuotaHost(baseURL);
+    if (quotaHost) return { providerId: id, apiKey, quotaHost };
+    if (!fallback) fallback = { providerId: id, apiKey };
   }
-  return undefined;
+  return fallback;
 }
 
 function accountKey(): string {
   return hashAccountKey(`${configPath()}|zcode`);
 }
 
-function quotaHost(baseURL: string): string {
-  return baseURL.includes("api.z.ai") ? HOST_INTL : HOST_CN;
-}
-
 async function fetchQuota(account: Account): Promise<UsageReport> {
+  // No official host — a custom gateway/local endpoint account: report
+  // unavailable WITHOUT sending anything (its key never leaves for quota).
+  if (!account.quotaHost) {
+    return unavailable({
+      kind: "no_quota",
+      detail: "the active ZCode provider is not an official Z.ai/BigModel endpoint",
+    });
+  }
   let resp: Response;
   try {
-    resp = await fetch(`${quotaHost(account.baseURL)}${QUOTA_PATH}`, {
+    resp = await fetch(`${account.quotaHost}${QUOTA_PATH}`, {
       method: "GET",
       headers: { Accept: "application/json, text/plain, */*", Authorization: `Bearer ${account.apiKey}` },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),

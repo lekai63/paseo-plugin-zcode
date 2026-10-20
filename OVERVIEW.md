@@ -20,18 +20,13 @@ Paseo ≥ 0.11.0 on the daemon; Node.js ≥ 22 on the daemon host; ZCode (deskto
 app or CLI ≥ 0.14.8) installed and signed in; plugins enabled
 (`"pluginsEnabled": true` in `~/.paseo/config.json`).
 
-## Install
-
-```bash
-paseo plugin add lianxin255/paseo-plugin-zcode
-paseo plugin ls   # expect: paseo-plugin-zcode  running
-```
-
-Update with `paseo plugin update paseo-plugin-zcode`.
+> This plugin registers the provider id `zcode`. The registry's
+> supermomonga/zcode-provider registers the same id; install one or the
+> other, not both.
 
 ## How it works and where data goes
 
-1. `paseo plugin add` prepares the checkout with `npm ci --omit=dev` (committed
+1. Installation prepares the checkout with `npm ci --omit=dev` (committed
    lockfile), installing the pinned `zcode-acp-server` (Apache-2.0) from npm.
 2. On load, the plugin finds the bridge (its own checkout copy first, then
    well-known npm global roots), picks a Node ≥ 22 by probing `node:sqlite`,
@@ -42,9 +37,13 @@ Update with `paseo plugin update paseo-plugin-zcode`.
 4. Model requests and authentication are handled by ZCode itself against the
    Z.ai/BigModel endpoints you are signed into — the plugin adds no network
    hops. The only request the plugin itself makes is a GET of the official GLM
-   quota endpoint (`open.bigmodel.cn` / `api.z.ai`), with the same API key from
-   `~/.zcode/v2/config.json`, to populate the usage card. Nothing is sent
-   anywhere else; no telemetry.
+   quota endpoint (`open.bigmodel.cn` / `api.z.ai`) to populate the usage card.
+   That request is sent **only when the active ZCode provider's base URL is
+   exactly one of those two official hosts**; for any other provider
+   (custom gateways, self-hosted or local endpoints) the card reports
+   `unavailable` without contacting the network, so a third-party key is never
+   attached to an official endpoint. Nothing is sent anywhere else; no
+   telemetry.
 
 Unofficial integration; not affiliated with or endorsed by Zhipu AI / Z.ai.
 
